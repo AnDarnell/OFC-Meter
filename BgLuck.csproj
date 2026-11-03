@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>BgLuck</AssemblyName>
+    <RootNamespace>BgLuck</RootNamespace>
+    <!-- Change if HDT is installed elsewhere. HDT's default is the Squirrel path below. -->
+    <HdtDir Condition="'$(HdtDir)' == ''">C:\Users\Admin\AppData\Local\HearthstoneDeckTracker\app-1.59.7</HdtDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\OFC.png" />
+    <!-- Point these at your HDT folder (the one containing "Hearthstone Deck Tracker.exe"). -->
+    <Reference Include="HearthstoneDeckTracker">
+      <HintPath>$(HdtDir)\HearthstoneDeckTracker.exe</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HearthDb">
+      <HintPath>$(HdtDir)\HearthDb.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+</Project>
