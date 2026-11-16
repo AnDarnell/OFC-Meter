@@ -1,6 +1,7 @@
 # BG Luck
 
-An HDT plugin that compares actual Battlegrounds damage taken with Bob's Buddy's expected damage.
+An HDT plugin that compares actual Battlegrounds damage taken with Bob's Buddy's expected damage. The plugin also gives a recap after each game with relevant stats.
+Latest version also includes a toggleable setting for who has ghost priority, as well as an overlay for recently faced opponents.
 
 ## Install
 1. Download `BgLuck.dll` from the latest GitHub release.
