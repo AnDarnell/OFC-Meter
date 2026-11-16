@@ -5,6 +5,8 @@ An HDT plugin that compares actual Battlegrounds damage taken with Bob's Buddy's
 Latest version also includes a toggleable setting for who has ghost priority, as well as an overlay for recently faced opponents.
 These features can be toggled on/off in Settings > Plugins > OFC-Meter.
 
+The recap feature still has issues deciding on shared placements. Working on this!
+
 ## Install
 1. Download `OFC-Meter.dll` from the latest GitHub release.
 2. In HDT, open **Options > Plugins > Plugins folder** and place `OFC-Meter.dll` inside.
