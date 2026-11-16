@@ -1,6 +1,9 @@
 # OFC-Meter
 
-* An HDT plugin that compares actual Battlegrounds damage taken with Bob's Buddy's expected damage. The plugin also gives a recap after each game with relevant stats from the game.
+* An HDT plugin that compares actual Battlegrounds damage taken with Bob's Buddy's expected damage.
+The numeric values is a comparison of expected damage taken compared to the actual amount of damage taken. A number above 1.00 means the player has taken more than expected, and vice versa.
+
+* The plugin also gives a recap after each game with relevant stats from the game.
 
 * Latest version also includes a toggleable setting for who has ghost priority + current ghost, as well as an overlay for recently faced opponents that follows the BG ruleset.
 These features can be toggled on/off in Settings > Plugins > OFC-Meter.
