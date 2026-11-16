@@ -10,10 +10,10 @@ The recap feature still has issues deciding on shared placements. Working on thi
 ## Install
 1. Download `OFC-Meter.dll` from the latest GitHub release.
 2. In HDT, open **Options > Plugins > Plugins folder** and place `OFC-Meter.dll` inside.
-4. Restart HDT and enable **BG Luck** under **Options > Plugins**.
+3. Restart HDT and enable **OFC-Meter** under **Options > Plugins**.
 
 ## Logs
-Game logs are saved as JSON in `%AppData%\HearthstoneDeckTracker\OFC-Meter`. Own recruit-phase board totals are
+Game logs are saved as JSON in `%AppData%\HearthstoneDeckTracker\BgLuck`. Own recruit-phase board totals are
 also appended to `board-stats.csv` in the same folder, one row per match and turn, with player tier, minion
 count, total attack, and total health. This is a separate dataset for later board-strength analysis.
 The JSON logs also include observed tavern-tier history and raw Dark Gift tag observations when available from

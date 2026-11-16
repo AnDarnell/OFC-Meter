@@ -23,16 +23,17 @@ namespace BgLuck
 	/// 
 	public class BgLuckPlugin : IPlugin
 	{
-		public string Name => "BG Luck";
-		public string Description => "Tracks cumulative combat luck, player tier history, and Battlegrounds board stats.";
-		public string ButtonText => "Open log folder";
-		public string Author => "Anton";
+		public string Name => "OFC-Meter";
+		public string Description => "Tracks Battlegrounds combat outcomes, matchups, and board stats.";
+		public string ButtonText => "Settings";
+		public string Author => "Darnell/Brugdar";
 		public Version Version => new Version(0, 1, 0);
-		public MenuItem MenuItem => null;
+		public MenuItem MenuItem => _menuItem;
 
 		private static readonly string LogDir = Path.Combine(
 			Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "HearthstoneDeckTracker", "BgLuck");
 		private static readonly string BoardStatsFile = Path.Combine(LogDir, "board-stats.csv");
+		private static readonly string SettingsFile = Path.Combine(LogDir, "settings.json");
 
 		// --- reflection handles into HDT internals (BobsBuddyInvoker is internal) ---
 		private static Type _invokerType;
@@ -45,6 +46,11 @@ namespace BgLuck
 		private LuckOverlayControl _overlay;
 		private TextBlock _oddPlayerMarker;
 		private TextBlock _playerOneMarker;
+		private Border[] _unavailableOpponentMarkers;
+		private MenuItem _menuItem;
+		private MenuItem _lobbyGhostMarkersMenuItem;
+		private MenuItem _opponentCrossesMenuItem;
+		private PluginSettings _settings = new PluginSettings();
 		private bool _showingFinalSummary;
 		private bool _newGamePending;
 		private string _completedGameId;
@@ -56,6 +62,7 @@ namespace BgLuck
 		private int? _completedStartingMmr;
 		private double? _completedPlacement;
 		private bool _completedPlacementIsShared;
+		private int? _completedSimultaneousEliminationCount;
 		private double? _completedAverageOpponentMmr;
 		private bool _completedAverageOpponentMmrResolved;
 		private bool _completedIsSpectator;
@@ -65,6 +72,8 @@ namespace BgLuck
 		public void OnLoad()
 		{
 			Directory.CreateDirectory(LogDir);
+			LoadPluginSettings();
+			CreatePluginMenu();
 			_invokerType = typeof(Core).Assembly.GetType("Hearthstone_Deck_Tracker.BobsBuddy.BobsBuddyInvoker");
 			_getInstance = _invokerType?.GetMethod("GetInstance", BindingFlags.Public | BindingFlags.Static);
 			var gameType = typeof(Core).Assembly.GetType("Hearthstone_Deck_Tracker.Hearthstone.GameV2");
@@ -89,6 +98,30 @@ namespace BgLuck
 			_playerOneMarker.FontFamily = new FontFamily("Segoe UI Emoji");
 			Core.OverlayCanvas.Children.Add(_oddPlayerMarker);
 			Core.OverlayCanvas.Children.Add(_playerOneMarker);
+			_unavailableOpponentMarkers = Enumerable.Range(0, 8)
+				.Select(_ => new Border
+				{
+					Width = 48,
+					Height = 48,
+					Background = Brushes.Transparent,
+					Opacity = 1.0,
+					RenderTransform = new ScaleTransform(1, 1),
+					IsHitTestVisible = false,
+					Visibility = Visibility.Collapsed,
+					Child = new TextBlock
+					{
+						Text = "\u00D7",
+						FontSize = 40,
+						FontWeight = FontWeights.SemiBold,
+						Foreground = new SolidColorBrush(Color.FromRgb(255, 35, 35)),
+						TextAlignment = TextAlignment.Center,
+						VerticalAlignment = VerticalAlignment.Center,
+						HorizontalAlignment = HorizontalAlignment.Center
+					}
+				})
+				.ToArray();
+			foreach(var marker in _unavailableOpponentMarkers)
+				Core.OverlayCanvas.Children.Add(marker);
 			GameEvents.OnGameStart.Add(OnGameStart);
 			GameEvents.OnGameEnd.Add(OnGameEnd);
 		}
@@ -98,14 +131,225 @@ namespace BgLuck
 			Save();
 			Core.OverlayCanvas.Children.Remove(_oddPlayerMarker);
 			Core.OverlayCanvas.Children.Remove(_playerOneMarker);
+			if(_unavailableOpponentMarkers != null)
+			{
+				foreach(var marker in _unavailableOpponentMarkers)
+					Core.OverlayCanvas.Children.Remove(marker);
+			}
 			if(_overlay != null)
 				Core.OverlayCanvas.Children.Remove(_overlay);
 			_oddPlayerMarker = null;
 			_playerOneMarker = null;
+			_unavailableOpponentMarkers = null;
+			_menuItem = null;
+			_lobbyGhostMarkersMenuItem = null;
+			_opponentCrossesMenuItem = null;
 			_overlay = null;
 		}
 
-		public void OnButtonPress() { System.Diagnostics.Process.Start(LogDir); }
+		public void OnButtonPress() { ShowSettingsDialog(); }
+
+		private void CreatePluginMenu()
+		{
+			_menuItem = new MenuItem { Header = "OFC-Meter" };
+			_lobbyGhostMarkersMenuItem = new MenuItem
+			{
+				Header = "Lobby leader / Ghost Prio markers",
+				IsCheckable = true,
+				IsChecked = _settings.ShowLobbyLeaderGhostMarkers,
+				ToolTip = "Show or hide the G and crown portrait markers and their hover details."
+			};
+			_lobbyGhostMarkersMenuItem.Click += (sender, args) => SaveSettingToggle(
+				_lobbyGhostMarkersMenuItem,
+				() => _settings.ShowLobbyLeaderGhostMarkers,
+				value => _settings.ShowLobbyLeaderGhostMarkers = value);
+			_opponentCrossesMenuItem = new MenuItem
+			{
+				Header = "Unavailable opponent crosses",
+				IsCheckable = true,
+				IsChecked = _settings.ShowUnavailableOpponentCrosses,
+				ToolTip = "Show or hide crosses for opponents ruled out by the matchup rules."
+			};
+			_opponentCrossesMenuItem.Click += (sender, args) => SaveSettingToggle(
+				_opponentCrossesMenuItem,
+				() => _settings.ShowUnavailableOpponentCrosses,
+				value => _settings.ShowUnavailableOpponentCrosses = value);
+			_menuItem.Items.Add(_lobbyGhostMarkersMenuItem);
+			_menuItem.Items.Add(_opponentCrossesMenuItem);
+		}
+
+		private void ShowSettingsDialog()
+		{
+			var lobbyMarkers = new CheckBox
+			{
+				Content = "Lobby leader / Ghost Prio markers",
+				IsChecked = _settings.ShowLobbyLeaderGhostMarkers,
+				Margin = new Thickness(0, 0, 0, 10)
+			};
+			var opponentCrosses = new CheckBox
+			{
+				Content = "Unavailable opponent crosses",
+				IsChecked = _settings.ShowUnavailableOpponentCrosses,
+				Margin = new Thickness(0, 0, 0, 10)
+			};
+			lobbyMarkers.Click += (sender, args) => SaveSettingToggle(
+				lobbyMarkers.IsChecked == true,
+				() => _settings.ShowLobbyLeaderGhostMarkers,
+				value => _settings.ShowLobbyLeaderGhostMarkers = value,
+				value => lobbyMarkers.IsChecked = value);
+			opponentCrosses.Click += (sender, args) => SaveSettingToggle(
+				opponentCrosses.IsChecked == true,
+				() => _settings.ShowUnavailableOpponentCrosses,
+				value => _settings.ShowUnavailableOpponentCrosses = value,
+				value => opponentCrosses.IsChecked = value);
+
+			var folderButton = new Button
+			{
+				Content = "Open log folder",
+				MinWidth = 110,
+				Margin = new Thickness(0, 0, 8, 0)
+			};
+			folderButton.Click += (sender, args) => System.Diagnostics.Process.Start(LogDir);
+			var closeButton = new Button
+			{
+				Content = "Close",
+				IsCancel = true,
+				MinWidth = 75
+			};
+			var buttons = new StackPanel
+			{
+				Orientation = Orientation.Horizontal,
+				HorizontalAlignment = HorizontalAlignment.Right,
+				Margin = new Thickness(0, 16, 0, 0)
+			};
+			buttons.Children.Add(folderButton);
+			buttons.Children.Add(closeButton);
+
+			var content = new StackPanel { Margin = new Thickness(18) };
+			content.Children.Add(lobbyMarkers);
+			content.Children.Add(opponentCrosses);
+			content.Children.Add(new TextBlock
+			{
+				Text = "Changes are saved immediately.",
+				Opacity = 0.75
+			});
+			content.Children.Add(buttons);
+
+			var window = new Window
+			{
+				Title = "OFC-Meter settings",
+				Width = 400,
+				Height = 210,
+				ResizeMode = ResizeMode.NoResize,
+				ShowInTaskbar = false,
+				WindowStartupLocation = WindowStartupLocation.CenterScreen,
+				Content = content
+			};
+			window.ShowDialog();
+		}
+
+		private void LoadPluginSettings()
+		{
+			string json;
+			try
+			{
+				json = File.ReadAllText(SettingsFile, Encoding.UTF8);
+			}
+			catch(FileNotFoundException)
+			{
+				return;
+			}
+			catch(IOException e)
+			{
+				ShowSettingsError("load", e);
+				return;
+			}
+			catch(UnauthorizedAccessException e)
+			{
+				ShowSettingsError("load", e);
+				return;
+			}
+
+			try
+			{
+				var settings = new JavaScriptSerializer().Deserialize<PluginSettings>(json);
+				if(settings == null)
+					throw new InvalidOperationException("The settings file is empty or invalid.");
+				_settings = settings;
+			}
+			catch(InvalidOperationException e)
+			{
+				ShowSettingsError("load", e);
+			}
+			catch(ArgumentException e)
+			{
+				ShowSettingsError("load", e);
+			}
+		}
+
+		private void SaveSettingToggle(MenuItem menuItem, Func<bool> getValue, Action<bool> setValue)
+		{
+			SaveSettingToggle(
+				menuItem.IsChecked,
+				getValue,
+				setValue,
+				value => menuItem.IsChecked = value);
+		}
+
+		private void SaveSettingToggle(
+			bool value,
+			Func<bool> getValue,
+			Action<bool> setValue,
+			Action<bool> restoreControl)
+		{
+			var previousValue = getValue();
+			setValue(value);
+			if(SavePluginSettings())
+			{
+				UpdatePluginMenuChecks();
+				return;
+			}
+
+			setValue(previousValue);
+			restoreControl(previousValue);
+			UpdatePluginMenuChecks();
+		}
+
+		private void UpdatePluginMenuChecks()
+		{
+			if(_lobbyGhostMarkersMenuItem != null)
+				_lobbyGhostMarkersMenuItem.IsChecked = _settings.ShowLobbyLeaderGhostMarkers;
+			if(_opponentCrossesMenuItem != null)
+				_opponentCrossesMenuItem.IsChecked = _settings.ShowUnavailableOpponentCrosses;
+		}
+
+		private bool SavePluginSettings()
+		{
+			try
+			{
+				var json = new JavaScriptSerializer().Serialize(_settings);
+				File.WriteAllText(SettingsFile, json, Encoding.UTF8);
+				return true;
+			}
+			catch(IOException e)
+			{
+				ShowSettingsError("save", e);
+			}
+			catch(UnauthorizedAccessException e)
+			{
+				ShowSettingsError("save", e);
+			}
+			return false;
+		}
+
+		private static void ShowSettingsError(string operation, Exception e)
+		{
+			MessageBox.Show(
+				"OFC-Meter could not " + operation + " settings: " + e.Message,
+				"OFC-Meter settings",
+				MessageBoxButton.OK,
+				MessageBoxImage.Error);
+		}
 
 		private static bool IsPlayerConceded(Hearthstone_Deck_Tracker.Hearthstone.GameV2 game)
 		{
@@ -140,6 +384,7 @@ namespace BgLuck
 			_completedStartingMmr = null;
 			_completedPlacement = null;
 			_completedPlacementIsShared = false;
+			_completedSimultaneousEliminationCount = null;
 			_completedAverageOpponentMmr = null;
 			_completedAverageOpponentMmrResolved = false;
 			_completedIsSpectator = false;
@@ -190,6 +435,7 @@ namespace BgLuck
 				var localControllerId = Core.Game?.Player?.Id;
 				var observedPlacement = GetFinalPlacement(_game, localControllerId);
 				_completedPlacementIsShared = HasSharedEliminationPlacement(_game, localControllerId);
+				_completedSimultaneousEliminationCount = GetSimultaneousEliminationCount(_game, localControllerId);
 				var finalPlacement = _game.IsSpectator
 					? (double?)null
 					: _completedPlacementIsShared
@@ -244,6 +490,7 @@ namespace BgLuck
 						.Select(x => x.PlayerComposition)
 						.FirstOrDefault(x => !string.IsNullOrEmpty(x)),
 					finalPlacement,
+					_completedSimultaneousEliminationCount,
 					_completedAverageOpponentMmr,
 					!_completedAverageOpponentMmrResolved,
 					GetUnlikeliestCombat(_game, "Loss"),
@@ -333,6 +580,7 @@ namespace BgLuck
 					_completedStartingMmr = null;
 					_completedPlacement = null;
 					_completedPlacementIsShared = false;
+					_completedSimultaneousEliminationCount = null;
 					_completedAverageOpponentMmr = null;
 					_completedAverageOpponentMmrResolved = false;
 					_completedIsSpectator = false;
@@ -362,7 +610,9 @@ namespace BgLuck
 				_lastCombatPhase = game.IsBattlegroundsCombatPhase;
 				_lastCombatPhaseTurn = currentTurn;
 				string ghostPriorityHeroName;
-				var oddPlayerId = UpdatePlayerMarkers(game, out ghostPriorityHeroName);
+				string oddPlayerHeroName;
+				var oddPlayerId = UpdatePlayerMarkers(
+					game, out ghostPriorityHeroName, out oddPlayerHeroName);
 
 				if(_getInstance == null)
 				{
@@ -393,6 +643,7 @@ namespace BgLuck
 						_combat = null;
 					}
 				}
+				UpdateUnavailableOpponentMarkers(game, currentTurn);
 				var playerHero = game.Player?.Hero;
 				int? currentHealth = playerHero == null
 					? (int?)null
@@ -408,7 +659,9 @@ namespace BgLuck
 					expectedHealth,
 					_game.HealthPercentile,
 					_game.IsSpectator,
+					_settings.ShowLobbyLeaderGhostMarkers,
 					oddPlayerId,
+					oddPlayerHeroName,
 					ghostPriorityHeroName);
 			}
 			catch(Exception e)
@@ -448,12 +701,14 @@ namespace BgLuck
 
 		private int? UpdatePlayerMarkers(
 			Hearthstone_Deck_Tracker.Hearthstone.GameV2 game,
-			out string ghostPriorityHeroName)
+			out string ghostPriorityHeroName,
+			out string oddPlayerHeroName)
 		{
 			ghostPriorityHeroName = null;
-			if(game?.Entities == null)
+			oddPlayerHeroName = null;
+			if(!_settings.ShowLobbyLeaderGhostMarkers || game?.Entities == null)
 			{
-				HidePlayerMarkers();
+				HideLobbyLeaderMarkers();
 				return null;
 			}
 
@@ -482,6 +737,15 @@ namespace BgLuck
 			var playerOneHero = game.Entities.Values.FirstOrDefault(entity => entity != null
 				&& entity.IsHero
 				&& entity.GetTag(playerIdTag) == 1);
+			var oddPlayerHero = oddPlayer == null
+				? null
+				: game.Entities.Values.FirstOrDefault(entity => entity != null
+					&& entity.IsHero
+					&& entity.GetTag(playerIdTag) == oddPlayer.PlayerId);
+			oddPlayerHeroName = oddPlayerHero?.Card?.Name
+				?? oddPlayerHero?.LocalizedName
+				?? oddPlayerHero?.Name
+				?? oddPlayerHero?.CardId;
 			ghostPriorityHeroName = playerOneHero?.Card?.Name
 				?? playerOneHero?.LocalizedName
 				?? playerOneHero?.Name
@@ -491,7 +755,138 @@ namespace BgLuck
 			return oddPlayer == null ? (int?)null : oddPlayer.PlayerId;
 		}
 
-		private static void SetPlayerMarkerPosition(TextBlock marker, int? place, double offsetX, double offsetY)
+		private void UpdateUnavailableOpponentMarkers(
+			Hearthstone_Deck_Tracker.Hearthstone.GameV2 game,
+			int turn)
+		{
+			if(_unavailableOpponentMarkers == null)
+				return;
+
+			if(!_settings.ShowUnavailableOpponentCrosses)
+			{
+				HideUnavailableOpponentMarkers();
+				return;
+			}
+
+			if(game?.Entities == null || game.Player?.Hero == null || turn <= 0 || _game == null)
+			{
+				HideUnavailableOpponentMarkers();
+				return;
+			}
+
+			if(game.IsBattlegroundsCombatPhase)
+				return;
+
+			HideUnavailableOpponentMarkers();
+			var lastCompletedCombatTurn = _game.Combats
+				.Select(combat => combat.Turn)
+				.DefaultIfEmpty(0)
+				.Max();
+			var upcomingTurn = Math.Max(turn, lastCompletedCombatTurn + 1);
+			var playerIdTag = HearthDb.Enums.GameTag.PLAYER_ID;
+			var placeTag = HearthDb.Enums.GameTag.PLAYER_LEADERBOARD_PLACE;
+			var players = game.Entities.Values
+				.Where(entity => entity != null
+					&& entity.HasTag(playerIdTag)
+					&& entity.GetTag(playerIdTag) > 0
+					&& entity.HasTag(placeTag)
+					&& entity.GetTag(placeTag) > 0
+					&& entity.GetTag(HearthDb.Enums.GameTag.BACON_DUMMY_PLAYER) != 1)
+				.GroupBy(entity => entity.GetTag(playerIdTag))
+				.Select(group => new
+				{
+					PlayerId = group.Key,
+					Place = group.Min(entity => entity.GetTag(placeTag)),
+					ControllerId = group.Select(entity => entity.GetTag(HearthDb.Enums.GameTag.CONTROLLER))
+						.FirstOrDefault(controllerId => controllerId > 0)
+				})
+				.ToList();
+			var localPlayerId = game.Player.Hero.GetTag(playerIdTag);
+			if(localPlayerId <= 0)
+				return;
+
+			var livingOpponents = players
+				.Where(player => player.PlayerId != localPlayerId
+					&& !IsPlayerEliminated(game, player.ControllerId))
+				.ToList();
+			var previousOpponents = _game.Combats
+				.Where(combat => combat.OpponentPlayerId.HasValue)
+				.Select(combat => combat.OpponentPlayerId.Value)
+				.ToList();
+			var recentOpponentIds = _game.Combats
+				.Skip(Math.Max(0, _game.Combats.Count - 3))
+				.Where(combat => combat.OpponentPlayerId.HasValue)
+				.Select(combat => combat.OpponentPlayerId.Value)
+				.ToList();
+			var facedOpponentIds = new HashSet<int>(previousOpponents);
+			var facedEveryLivingOpponent = livingOpponents.All(
+				player => facedOpponentIds.Contains(player.PlayerId));
+			var enforceMatchupRestrictions = livingOpponents.Count > 2;
+
+			foreach(var player in players)
+			{
+				if(player.PlayerId == localPlayerId
+					|| player.PlayerId > _unavailableOpponentMarkers.Length
+					|| player.Place < 1 || player.Place > 8)
+					continue;
+
+				var isEliminated = IsPlayerEliminated(game, player.ControllerId);
+				var unavailable = isEliminated
+					? recentOpponentIds.Contains(player.PlayerId)
+					: false;
+				if(!isEliminated && enforceMatchupRestrictions)
+				{
+					if(upcomingTurn < 8)
+						unavailable = !facedEveryLivingOpponent && facedOpponentIds.Contains(player.PlayerId);
+					else
+					{
+						var lastEncounter = previousOpponents.FindLastIndex(id => id == player.PlayerId);
+						if(lastEncounter >= 0)
+						{
+							var otherPlayersSince = previousOpponents
+								.Skip(lastEncounter + 1)
+								.Where(id => id != player.PlayerId)
+								.Distinct()
+								.Count();
+							unavailable = otherPlayersSince < 3;
+						}
+					}
+				}
+
+				if(unavailable)
+					SetPlayerMarkerPosition(
+						_unavailableOpponentMarkers[player.PlayerId - 1],
+						player.Place,
+						3,
+						0);
+			}
+		}
+
+		private static bool IsPlayerEliminated(
+			Hearthstone_Deck_Tracker.Hearthstone.GameV2 game,
+			int controllerId)
+		{
+			if(game?.Entities == null || controllerId <= 0)
+				return false;
+
+			var state = game.Entities.Values
+				.Where(entity => entity != null && entity.IsPlayer
+					&& entity.GetTag(HearthDb.Enums.GameTag.CONTROLLER) == controllerId)
+				.Select(entity => entity.GetTag(HearthDb.Enums.GameTag.PLAYSTATE))
+				.FirstOrDefault();
+			if(state == (int)HearthDb.Enums.PlayState.LOST
+				|| state == (int)HearthDb.Enums.PlayState.TIED
+				|| state == (int)HearthDb.Enums.PlayState.CONCEDED
+				|| state == (int)HearthDb.Enums.PlayState.QUIT
+				|| state == (int)HearthDb.Enums.PlayState.DISCONNECTED)
+				return true;
+
+			return game.Entities.Values.Any(entity => entity != null && entity.IsHero
+				&& entity.GetTag(HearthDb.Enums.GameTag.CONTROLLER) == controllerId
+				&& entity.Health + entity.GetTag(HearthDb.Enums.GameTag.ARMOR) <= 0);
+		}
+
+		private static void SetPlayerMarkerPosition(FrameworkElement marker, int? place, double offsetX, double offsetY)
 		{
 			var canvas = Core.OverlayCanvas;
 			var canvasWidth = canvas.ActualWidth;
@@ -522,10 +917,25 @@ namespace BgLuck
 
 		private void HidePlayerMarkers()
 		{
+			HideLobbyLeaderMarkers();
+			HideUnavailableOpponentMarkers();
+		}
+
+		private void HideLobbyLeaderMarkers()
+		{
 			if(_oddPlayerMarker != null)
 				_oddPlayerMarker.Visibility = Visibility.Collapsed;
 			if(_playerOneMarker != null)
 				_playerOneMarker.Visibility = Visibility.Collapsed;
+		}
+
+		private void HideUnavailableOpponentMarkers()
+		{
+			if(_unavailableOpponentMarkers != null)
+			{
+				foreach(var marker in _unavailableOpponentMarkers)
+					marker.Visibility = Visibility.Collapsed;
+			}
 		}
 
 		private CombatLog SnapshotCombatStart(int turn)
@@ -543,6 +953,12 @@ namespace BgLuck
 					_game.InitialEffectiveHealth = c.PlayerHealth + c.PlayerArmor;
 				c.PlayerTier = me?.GetTag(HearthDb.Enums.GameTag.PLAYER_TECH_LEVEL) ?? 0;
 				c.OpponentHeroEntityId = opp?.Id;
+				var opponentPlayerId = opp?.GetTag(HearthDb.Enums.GameTag.PLAYER_ID) ?? 0;
+				if(opponentPlayerId <= 0 && opp != null)
+					opponentPlayerId = _game.PlayerTierHistories
+						.FirstOrDefault(history => history.HeroEntityId == opp.Id)
+						?.PlayerId ?? 0;
+				c.OpponentPlayerId = opponentPlayerId > 0 ? (int?)opponentPlayerId : null;
 				var opponentTier = opp?.GetTag(HearthDb.Enums.GameTag.PLAYER_TECH_LEVEL) ?? 0;
 				c.OpponentTier = opponentTier > 0 ? (int?)opponentTier : null;
 				c.OpponentHero = opp?.Card?.Name ?? opp?.CardId;
@@ -666,6 +1082,7 @@ namespace BgLuck
 
 			var aliveControllers = new HashSet<int>(playerStates.Keys
 				.Where(controllerId => !eliminatedControllers.Contains(controllerId)));
+			var localControllerId = game.Player?.Id;
 			if(game.IsBattlegroundsCombatPhase
 				&& (!_lastCombatPhase || turn != _lastCombatPhaseTurn))
 			{
@@ -676,17 +1093,21 @@ namespace BgLuck
 			if(_game.PlacementCombatStartTurn.HasValue
 				&& (_game.PlacementCombatStartTurn.Value == turn || finalCapture))
 			{
-				var aliveAfterCombat = _game.AlivePlayersAtCombatStart
-					.Count(aliveControllers.Contains);
-				var eliminatedDuringCombat = _game.AlivePlayersAtCombatStart.Count - aliveAfterCombat;
-				if(eliminatedDuringCombat > 1)
+				var eliminatedDuringCombat = _game.AlivePlayersAtCombatStart
+					.Where(controllerId => !aliveControllers.Contains(controllerId))
+					.ToList();
+				if(localControllerId.HasValue && eliminatedDuringCombat.Contains(localControllerId.Value))
+					_game.SimultaneousEliminationCounts[_game.PlacementCombatStartTurn.Value] =
+						eliminatedDuringCombat.Count;
+				if(eliminatedDuringCombat.Count > 1)
 				{
-					_game.SimultaneousEliminationTurns.Add(_game.PlacementCombatStartTurn.Value);
-					_game.AlivePlayerCountsAfterCombat[_game.PlacementCombatStartTurn.Value] = aliveAfterCombat;
+					var combatTurn = _game.PlacementCombatStartTurn.Value;
+					var aliveAfterCombat = _game.AlivePlayersAtCombatStart.Count - eliminatedDuringCombat.Count;
+					_game.SimultaneousEliminationTurns.Add(combatTurn);
+					_game.AlivePlayerCountsAfterCombat[combatTurn] = aliveAfterCombat;
 				}
 			}
 
-			var localControllerId = game.Player?.Id;
 			var localHeroId = game.Player?.Hero?.Id;
 			var observations = new List<PlayerPlacementLog>();
 			var observationTurn = finalCapture && _game.PlacementCombatStartTurn.HasValue
@@ -806,6 +1227,20 @@ namespace BgLuck
 				&& game.SimultaneousEliminationTurns.Contains(local.Turn);
 		}
 
+		private static int? GetSimultaneousEliminationCount(GameLog game, int? localControllerId)
+		{
+			if(!localControllerId.HasValue)
+				return null;
+
+			var local = game.PlacementObservations
+				.FirstOrDefault(x => x.ControllerId == localControllerId.Value);
+			return local != null
+				&& local.IsElimination
+				&& game.SimultaneousEliminationCounts.TryGetValue(local.Turn, out var count)
+					? (int?)count
+					: null;
+		}
+
 		private static double? GetHdtReportedPlacement(
 			Hearthstone_Deck_Tracker.Hearthstone.GameV2 game)
 		{
@@ -892,7 +1327,7 @@ namespace BgLuck
 				return;
 
 			_completedPlacement = placement.Value;
-			_overlay?.UpdateFinalPlacement(_completedPlacement);
+			_overlay?.UpdateFinalPlacement(_completedPlacement, _completedSimultaneousEliminationCount);
 			if(!_completedIsSpectator && _completedStartingMmr.HasValue)
 				_completedAverageOpponentMmrResolved = false;
 		}
@@ -1339,6 +1774,7 @@ namespace BgLuck
 			[ScriptIgnore] public HashSet<int> SimultaneousEliminationTurns = new HashSet<int>();
 			[ScriptIgnore] public Dictionary<int, int> AlivePlayerCountsAtCombatStart = new Dictionary<int, int>();
 			[ScriptIgnore] public Dictionary<int, int> AlivePlayerCountsAfterCombat = new Dictionary<int, int>();
+			[ScriptIgnore] public Dictionary<int, int> SimultaneousEliminationCounts = new Dictionary<int, int>();
 			public List<CombatLog> Combats = new List<CombatLog>();
 			public List<PlayerTierHistory> PlayerTierHistories = new List<PlayerTierHistory>();
 			public List<PlayerPlacementLog> PlacementObservations = new List<PlayerPlacementLog>();
@@ -1420,6 +1856,7 @@ namespace BgLuck
 			public int PlayerHealth, PlayerArmor, PlayerTier;
 			public string OpponentHero;
 			public int? OpponentHeroEntityId, OpponentTier;
+			public int? OpponentPlayerId;
 			public int OpponentHealth, OpponentArmor;
 			public List<string> PlayerBoard, OpponentBoard;
 			public string Result;
@@ -1430,6 +1867,12 @@ namespace BgLuck
 			public double? ExpectedDamageTaken;
 			public List<Bucket> Distribution;
 			public string Note;
+		}
+
+		public class PluginSettings
+		{
+			public bool ShowLobbyLeaderGhostMarkers { get; set; } = true;
+			public bool ShowUnavailableOpponentCrosses { get; set; } = true;
 		}
 
 		private class Bucket

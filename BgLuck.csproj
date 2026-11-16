@@ -4,7 +4,7 @@
     <TargetFramework>net472</TargetFramework>
     <UseWPF>true</UseWPF>
     <LangVersion>latest</LangVersion>
-    <AssemblyName>BgLuck</AssemblyName>
+    <AssemblyName>OFC-Meter</AssemblyName>
     <RootNamespace>BgLuck</RootNamespace>
     <HdtDir Condition="'$(HdtDir)' == ''">C:\Users\Admin\AppData\Local\HearthstoneDeckTracker\app-1.59.7</HdtDir>
   </PropertyGroup>

@@ -88,7 +88,7 @@ namespace BgLuck
 
 			_status = new TextBlock
 			{
-				Text = "BG Luck",
+				Text = "OFC-Meter",
 				Foreground = Brushes.White,
 				FontSize = 16,
 				FontWeight = FontWeights.SemiBold,
@@ -217,13 +217,13 @@ namespace BgLuck
 			_icon = new Image
 			{
 				Source = new System.Windows.Media.Imaging.BitmapImage(
-					new Uri("pack://application:,,,/BgLuck;component/Assets/OFC.png")),
+					new Uri("pack://application:,,,/OFC-Meter;component/Assets/OFC.png")),
 				Width = 32,
 				Height = 32,
 				Stretch = Stretch.Uniform,
 				VerticalAlignment = VerticalAlignment.Center,
 				Margin = new Thickness(0, 0, 6, 0),
-				ToolTip = "BG Luck"
+				ToolTip = "OFC-Meter"
 			};
 			var luckLine = new StackPanel
 			{
@@ -399,32 +399,49 @@ namespace BgLuck
 			double? expectedHealth,
 			double? healthPercentile,
 			bool isSpectator,
+			bool showLobbyLeaderGhostMarkers,
 			int? oddPlayerId,
+			string oddPlayerHeroName,
 			string ghostPriorityHeroName)
 		{
 			_liveMode = true;
 			_finalSummaryMode = false;
 			SetContentVerticalAlignment(true);
 			_openRecapButton.Visibility = Visibility.Collapsed;
-			_status.Text = "BG Luck";
+			_status.Text = "OFC-Meter";
 			SetLiveScoreLabel(ratio);
 			_liveScore.ToolTip = BuildLiveScoreTooltip(
 				actualDamageTaken, scoredActualDamageTaken, expectedDamageTaken,
 				ratio, currentHealth, expectedHealth, healthPercentile);
 			_liveScore.Foreground = GetScoreColor(ratio);
 			SetCompactExpectedHealth(currentHealth, expectedHealth, ratio);
-			_oddPlayerStatus.Text = oddPlayerId.HasValue
-				? "Odd player: #" + oddPlayerId.Value
-				: "";
-			_oddPlayerStatus.Visibility = oddPlayerId.HasValue ? Visibility.Visible : Visibility.Collapsed;
-			_ghostPriorityStatus.Inlines.Clear();
-			_ghostPriorityStatus.Inlines.Add(new Run("Ghost Prio: ") { Foreground = _labelBlue });
-			_ghostPriorityStatus.Inlines.Add(new Run(
-				string.IsNullOrEmpty(ghostPriorityHeroName) ? "N/A" : ghostPriorityHeroName)
+			_oddPlayerStatus.Inlines.Clear();
+			if(showLobbyLeaderGhostMarkers && oddPlayerId.HasValue)
 			{
-				Foreground = _gold
-			});
-			_ghostPriorityStatus.Visibility = Visibility.Visible;
+				_oddPlayerStatus.Inlines.Add(new Run("Odd player: ") { Foreground = _labelBlue });
+				_oddPlayerStatus.Inlines.Add(new Run(string.IsNullOrEmpty(oddPlayerHeroName)
+					? "#" + oddPlayerId.Value
+					: oddPlayerHeroName)
+				{
+					Foreground = _gold
+				});
+			}
+			_oddPlayerStatus.Visibility = showLobbyLeaderGhostMarkers && oddPlayerId.HasValue
+				? Visibility.Visible
+				: Visibility.Collapsed;
+			_ghostPriorityStatus.Inlines.Clear();
+			if(showLobbyLeaderGhostMarkers)
+			{
+				_ghostPriorityStatus.Inlines.Add(new Run("Ghost Prio: ") { Foreground = _labelBlue });
+				_ghostPriorityStatus.Inlines.Add(new Run(
+					string.IsNullOrEmpty(ghostPriorityHeroName) ? "N/A" : ghostPriorityHeroName)
+				{
+					Foreground = _gold
+				});
+			}
+			_ghostPriorityStatus.Visibility = showLobbyLeaderGhostMarkers
+				? Visibility.Visible
+				: Visibility.Collapsed;
 			SetDamageValue(
 				_actualValue,
 				"DT: ",
@@ -490,6 +507,7 @@ namespace BgLuck
 			IList<BoardStatsTurn> boardStats,
 			string finalComposition,
 			double? finalPlacement,
+			int? simultaneousEliminationCount,
 			double? averageOpponentMmr,
 			bool averageOpponentMmrPending,
 			Tuple<int, string, double> worstCombat,
@@ -501,7 +519,7 @@ namespace BgLuck
 			SetContentVerticalAlignment(true);
 			_detailsCloseTimer.Stop();
 			SetTurnsExpanded(false);
-			_status.Text = "BG Luck";
+			_status.Text = "OFC-Meter";
 			SetLiveScoreLabel(ratio);
 			_liveScore.Foreground = GetScoreColor(ratio);
 			SetCompactExpectedHealth(
@@ -532,7 +550,7 @@ namespace BgLuck
 			_turnDetails.Visibility = Visibility.Collapsed;
 			SetTurnsExpanded(false);
 			BuildReview(
-				tierSeries, boardStats, finalComposition, finalPlacement,
+				tierSeries, boardStats, finalComposition, finalPlacement, simultaneousEliminationCount,
 				averageOpponentMmr, averageOpponentMmrPending);
 			_score.Text = isSpectator
 				? "Spectator game - not ranked"
@@ -566,7 +584,7 @@ namespace BgLuck
 			_detailsCloseTimer.Stop();
 			SetTurnsExpanded(false);
 			SetDetailsExpanded(false);
-			_status.Text = "BG Luck";
+			_status.Text = "OFC-Meter";
 			_compactExpectedHealth.Visibility = Visibility.Collapsed;
 			_oddPlayerStatus.Visibility = Visibility.Collapsed;
 			_ghostPriorityStatus.Visibility = Visibility.Collapsed;
@@ -842,6 +860,7 @@ namespace BgLuck
 			IList<BoardStatsTurn> boardStats,
 			string finalComposition,
 			double? finalPlacement,
+			int? simultaneousEliminationCount,
 			double? averageOpponentMmr,
 			bool averageOpponentMmrPending)
 		{
@@ -853,9 +872,11 @@ namespace BgLuck
 			{
 				Foreground = Brushes.White,
 				FontSize = 14,
-				FontWeight = FontWeights.SemiBold
+				FontWeight = FontWeights.SemiBold,
+				TextWrapping = TextWrapping.Wrap,
+				MaxWidth = 320
 			};
-			UpdateFinalPlacement(finalPlacement);
+			UpdateFinalPlacement(finalPlacement, simultaneousEliminationCount);
 			_reviewContent.Children.Add(_finalCompositionLine);
 			_reviewContent.Children.Add(_averageOpponentMmrLine);
 			UpdateAverageOpponentMmr(averageOpponentMmr, averageOpponentMmrPending);
@@ -930,13 +951,25 @@ namespace BgLuck
 			_averageOpponentMmrLine.Foreground = averageOpponentMmr.HasValue ? _labelBlue : _neutral;
 		}
 
-		public void UpdateFinalPlacement(double? finalPlacement)
+		public void UpdateFinalPlacement(double? finalPlacement, int? simultaneousEliminationCount)
 		{
 			if(_finalCompositionLine == null)
 				return;
 
 			_finalCompositionLine.Text = (string.IsNullOrEmpty(_finalComposition) ? "Unavailable" : _finalComposition)
 				+ (finalPlacement.HasValue ? " (" + FormatPlacement(finalPlacement.Value) + ")" : "");
+			if(simultaneousEliminationCount.HasValue)
+			{
+				var count = simultaneousEliminationCount.Value;
+				_finalCompositionLine.Text += count > 1
+					? " - " + count + " eliminated together (you + " + (count - 1) + ")"
+					: " - no other eliminations observed with you";
+				_finalCompositionLine.ToolTip =
+					"Based on player elimination states recorded during the same combat. The total includes you.";
+			}
+			else
+				_finalCompositionLine.ToolTip =
+					"Simultaneous eliminations are inferred from player states and may be unavailable if the game data does not expose them.";
 		}
 
 		private TextBlock CreateSectionHeader(string text) => new TextBlock
