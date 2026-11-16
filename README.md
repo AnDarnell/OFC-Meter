@@ -2,7 +2,7 @@
 
 * An HDT plugin that compares actual Battlegrounds damage taken with Bob's Buddy's expected damage.
 
-* The numeric value is a comparison of expected damage taken compared to the actual amount of damage taken. A number **above 1.00** means the player has taken **more** than expected, and vice versa.
+* The numeric value is a comparison of expected damage taken compared to the actual amount of damage taken. A number **above 1.00** means the player has taken **more** than expected, and vice versa. This is also highlighted with color coding.
 
 * The plugin also gives a recap after each game with relevant stats from the game.
 
@@ -29,3 +29,5 @@ Requires the .NET Framework 4.7.2 targeting pack and an HDT installation:
 ```powershell
 dotnet build -c Release -p:HdtDir="C:\path\to\HDT\app-version"
 ```
+## Feedback
+I'm very open to any feedback or questions. Discord: Brugdar, Twitch: Brugdar_, Battle-Tag: Darnell#21191
