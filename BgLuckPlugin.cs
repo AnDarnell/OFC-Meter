@@ -730,7 +730,16 @@ namespace BgLuck
 					IsOddPlayerOut = group.Any(entity => entity.GetTag(oddPlayerTag) == 1)
 				})
 				.OrderBy(player => player.Place)
+				.ThenBy(player => player.PlayerId)
 				.ToList();
+			var markerPlaces = players.ToDictionary(player => player.PlayerId, player => player.Place);
+			if(markerPlaces.Values.Distinct().Count() != markerPlaces.Count)
+			{
+				// Shared leaderboard places need unique portrait rows; player ID breaks the tie.
+				markerPlaces.Clear();
+				for(var i = 0; i < players.Count; i++)
+					markerPlaces.Add(players[i].PlayerId, i + 1);
+			}
 
 			var oddPlayer = players.FirstOrDefault(player => player.IsOddPlayerOut);
 			var playerOne = players.FirstOrDefault(player => player.PlayerId == 1);
@@ -750,8 +759,16 @@ namespace BgLuck
 				?? playerOneHero?.LocalizedName
 				?? playerOneHero?.Name
 				?? playerOneHero?.CardId;
-			SetPlayerMarkerPosition(_oddPlayerMarker, oddPlayer?.Place, -8, 28);
-			SetPlayerMarkerPosition(_playerOneMarker, playerOne?.Place, 38, 28);
+			SetPlayerMarkerPosition(
+				_oddPlayerMarker,
+				oddPlayer == null ? (int?)null : markerPlaces[oddPlayer.PlayerId],
+				-8,
+				28);
+			SetPlayerMarkerPosition(
+				_playerOneMarker,
+				playerOne == null ? (int?)null : markerPlaces[playerOne.PlayerId],
+				38,
+				28);
 			return oddPlayer == null ? (int?)null : oddPlayer.PlayerId;
 		}
 
