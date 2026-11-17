@@ -813,9 +813,7 @@ namespace BgLuck
 				.Select(group => new
 				{
 					PlayerId = group.Key,
-					Place = group.Min(entity => entity.GetTag(placeTag)),
-					ControllerId = group.Select(entity => entity.GetTag(HearthDb.Enums.GameTag.CONTROLLER))
-						.FirstOrDefault(controllerId => controllerId > 0)
+					Place = group.Min(entity => entity.GetTag(placeTag))
 				})
 				.ToList();
 			var localPlayerId = game.Player.Hero.GetTag(playerIdTag);
@@ -824,7 +822,7 @@ namespace BgLuck
 
 			var livingOpponents = players
 				.Where(player => player.PlayerId != localPlayerId
-					&& !IsPlayerEliminated(game, player.ControllerId))
+					&& !IsPlayerEliminated(game, player.PlayerId))
 				.ToList();
 			var previousOpponents = _game.Combats
 				.Where(combat => combat.OpponentPlayerId.HasValue)
@@ -847,7 +845,7 @@ namespace BgLuck
 					|| player.Place < 1 || player.Place > 8)
 					continue;
 
-				var isEliminated = IsPlayerEliminated(game, player.ControllerId);
+				var isEliminated = IsPlayerEliminated(game, player.PlayerId);
 				var unavailable = isEliminated
 					? recentOpponentIds.Contains(player.PlayerId)
 					: false;
@@ -881,16 +879,17 @@ namespace BgLuck
 
 		private static bool IsPlayerEliminated(
 			Hearthstone_Deck_Tracker.Hearthstone.GameV2 game,
-			int controllerId)
+			int playerId)
 		{
-			if(game?.Entities == null || controllerId <= 0)
+			if(game?.Entities == null || playerId <= 0)
 				return false;
 
+			// Only the local player has a player entity that matches PLAYER_ID (HDT's Entity.IsPlayer).
 			var state = game.Entities.Values
 				.Where(entity => entity != null && entity.IsPlayer
-					&& entity.GetTag(HearthDb.Enums.GameTag.CONTROLLER) == controllerId)
+					&& entity.GetTag(HearthDb.Enums.GameTag.PLAYER_ID) == playerId)
 				.Select(entity => entity.GetTag(HearthDb.Enums.GameTag.PLAYSTATE))
-				.FirstOrDefault();
+				.FirstOrDefault(playState => playState != 0);
 			if(state == (int)HearthDb.Enums.PlayState.LOST
 				|| state == (int)HearthDb.Enums.PlayState.TIED
 				|| state == (int)HearthDb.Enums.PlayState.CONCEDED
@@ -898,8 +897,9 @@ namespace BgLuck
 				|| state == (int)HearthDb.Enums.PlayState.DISCONNECTED)
 				return true;
 
+			// Opponents share one CONTROLLER, so they are told apart by PLAYER_ID.
 			return game.Entities.Values.Any(entity => entity != null && entity.IsHero
-				&& entity.GetTag(HearthDb.Enums.GameTag.CONTROLLER) == controllerId
+				&& entity.GetTag(HearthDb.Enums.GameTag.PLAYER_ID) == playerId
 				&& entity.Health + entity.GetTag(HearthDb.Enums.GameTag.ARMOR) <= 0);
 		}
 
@@ -1086,19 +1086,14 @@ namespace BgLuck
 			{
 				lost, tied, conceded, quit, disconnected
 			};
-			var eliminatedControllers = new HashSet<int>(playerStates
-				.Where(x => eliminatedStates.Contains(x.Value))
-				.Select(x => x.Key));
-			foreach(var hero in game.Entities.Values.Where(e => e != null && e.IsHero))
+			// All opponent heroes share one CONTROLLER in Battlegrounds, so the lobby is keyed on PLAYER_ID
+			// (like HDT's own OpponentDeadForTracker). The local player's PLAYSTATE is applied on top.
+			var aliveControllers = GetAliveLobbyPlayerIds(game);
+			foreach(var playerState in playerStates)
 			{
-				var controllerId = hero.GetTag(HearthDb.Enums.GameTag.CONTROLLER);
-				if(controllerId > 0
-					&& hero.Health + hero.GetTag(HearthDb.Enums.GameTag.ARMOR) <= 0)
-					eliminatedControllers.Add(controllerId);
+				if(eliminatedStates.Contains(playerState.Value))
+					aliveControllers.Remove(playerState.Key);
 			}
-
-			var aliveControllers = new HashSet<int>(playerStates.Keys
-				.Where(controllerId => !eliminatedControllers.Contains(controllerId)));
 			var localControllerId = game.Player?.Id;
 			if(game.IsBattlegroundsCombatPhase
 				&& (!_lastCombatPhase || turn != _lastCombatPhaseTurn))
@@ -1187,6 +1182,28 @@ namespace BgLuck
 				observation.Batch = batch;
 				_game.PlacementObservations.Add(observation);
 			}
+		}
+
+		/// <summary>PLAYER_IDs of every lobby hero that is still alive (Health + Armor above 0).</summary>
+		private static HashSet<int> GetAliveLobbyPlayerIds(Hearthstone_Deck_Tracker.Hearthstone.GameV2 game)
+		{
+			var playerIdTag = HearthDb.Enums.GameTag.PLAYER_ID;
+			var placeTag = HearthDb.Enums.GameTag.PLAYER_LEADERBOARD_PLACE;
+			var lobbyIds = new HashSet<int>();
+			var deadIds = new HashSet<int>();
+			foreach(var hero in game.Entities.Values)
+			{
+				if(hero == null || !hero.IsHero || !hero.HasTag(placeTag))
+					continue;
+				var playerId = hero.GetTag(playerIdTag);
+				if(playerId <= 0 || hero.GetTag(HearthDb.Enums.GameTag.BACON_DUMMY_PLAYER) == 1)
+					continue;
+				lobbyIds.Add(playerId);
+				if(hero.Health + hero.GetTag(HearthDb.Enums.GameTag.ARMOR) <= 0)
+					deadIds.Add(playerId);
+			}
+			lobbyIds.ExceptWith(deadIds);
+			return lobbyIds;
 		}
 
 		private static double? GetFinalPlacement(GameLog game, int? localControllerId)
