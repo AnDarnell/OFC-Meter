@@ -63,16 +63,17 @@ namespace BgLuck
 		private bool _tierHistoryErrorLogged;
 		private readonly HashSet<int> _localHeroEntityIds = new HashSet<int>();
 		private int? _completedStartingMmr;
+		private int? _completedMmrChange;
 		private double? _completedPlacement;
 		private bool _completedPlacementIsShared;
 		private int? _completedSimultaneousEliminationCount;
+		private GameLog _completedGameLog;
 		private double? _completedAverageOpponentMmr;
 		private bool _completedAverageOpponentMmrResolved;
 		private bool _completedIsSpectator;
 		private DateTime _completedRatingCheckDeadline;
 		private int? _completedAliveAtCombatStart;
 		private DateTime _completedPlacementRecheckUntil = DateTime.MinValue;
-		private double? _lastLoggedTagPlace;
 		private readonly List<string> _debug = new List<string>();
 
 		public void OnLoad()
@@ -385,9 +386,12 @@ namespace BgLuck
 				return;
 			}
 			_game = null;
+			_completedGameLog = null;
+			_completedPlacementRecheckUntil = DateTime.MinValue;
 			_combatInvoker = null;
 			_combat = null;
 			_completedStartingMmr = null;
+			_completedMmrChange = null;
 			_completedPlacement = null;
 			_completedPlacementIsShared = false;
 			_completedSimultaneousEliminationCount = null;
@@ -437,8 +441,24 @@ namespace BgLuck
 					if(concededCombat != null)
 						ApplyConcededLethalDamage(concededCombat);
 				}
+				// Recheck placements after the final combat has been processed.
+				try
+				{
+					if(Core.Game != null)
+						CapturePlayerPlacements(
+							Core.Game,
+							Core.Game.GetTurnNumber(),
+							true);
+				}
+				catch(Exception e)
+				{
+					_debug.Add("Post-combat placement capture: "
+						+ e.GetType().Name + ": " + e.Message);
+				}
 				if(!_game.StartingBattlegroundsMmr.HasValue)
 					_game.StartingBattlegroundsMmr = GetStartingBattlegroundsMmr(Core.Game);
+					
+				_completedStartingMmr = _game.StartingBattlegroundsMmr;
 				var localControllerId = Core.Game?.Player?.Id;
 				var observedPlacement = GetFinalPlacement(_game, LocalPlacementPlayerKey);
 				_completedPlacementIsShared = HasSharedEliminationPlacement(_game, LocalPlacementPlayerKey);
@@ -454,7 +474,7 @@ namespace BgLuck
 				var gain = endingMmr.HasValue && _game.StartingBattlegroundsMmr.HasValue
 					? (int?)(endingMmr.Value - _game.StartingBattlegroundsMmr.Value)
 					: null;
-				_completedStartingMmr = _game.StartingBattlegroundsMmr;
+				_completedMmrChange = gain;
 				_overlay?.SetPlayerMmr(_completedStartingMmr);
 				_completedPlacement = finalPlacement;
 				_completedAverageOpponentMmr = EstimateAverageOpponentMmr(
@@ -473,7 +493,7 @@ namespace BgLuck
 					actualHealth = 0;
 				var finalCombat = _game.Combats.OrderByDescending(c => c.Turn).FirstOrDefault();
 				if(finalCombat != null && finalCombat.Result == "Loss"
-					&& finalCombat.RawDamageTaken > finalCombat.PlayerHealth + finalCombat.PlayerArmor)
+					&& finalCombat.RawDamageTaken >= finalCombat.PlayerHealth + finalCombat.PlayerArmor)
 					actualHealth = finalCombat.PlayerHealth + finalCombat.PlayerArmor - finalCombat.RawDamageTaken;
 				else if(!actualHealth.HasValue && finalCombat != null && finalCombat.Result == "Loss")
 					actualHealth = finalCombat.PlayerHealth + finalCombat.PlayerArmor - finalCombat.RawDamageTaken;
@@ -506,12 +526,17 @@ namespace BgLuck
 					GetUnlikeliestCombat(_game, "Loss"),
 					GetUnlikeliestCombat(_game, "Win"),
 					_game.IsSpectator);
+				_overlay?.UpdateMmrChange(_completedMmrChange);
 				_showingFinalSummary = true;
 				_completedGameId = _game.GameId;
-			}
-			_game = null;
-			_combatInvoker = null;
-			_combat = null;
+
+				// Keep placement data available for late tag updates.
+				_completedGameLog = _game;
+				_completedPlacementRecheckUntil = DateTime.Now.AddSeconds(5);
+				}
+				_game = null;
+				_combatInvoker = null;
+				_combat = null;
 		}
 
 		/// <summary>Called by HDT roughly every 100 ms on the UI thread.</summary>
@@ -524,15 +549,17 @@ namespace BgLuck
 			try
 			{
 				var game = Core.Game;
+
 				if(_showingFinalSummary)
 				{
 					if(game != null && game.CurrentGameStats != null
 						&& game.CurrentGameStats.GameId.ToString() == _completedGameId)
 					{
+						RecheckCompletedPlacement(game);
 						RefreshCompletedPlacement(game);
 						RefreshCompletedAverageOpponentMmr(game);
 					}
-					else if(!_completedAverageOpponentMmrResolved
+										else if(!_completedAverageOpponentMmrResolved
 						&& DateTime.Now >= _completedRatingCheckDeadline)
 						RefreshCompletedAverageOpponentMmr(null);
 				}
@@ -580,6 +607,8 @@ namespace BgLuck
 					_showingFinalSummary = false;
 					_newGamePending = false;
 					_game = null;
+					_completedGameLog = null;
+					_completedPlacementRecheckUntil = DateTime.MinValue;
 					_combatInvoker = null;
 					_combat = null;
 					_debug.Clear();
@@ -1183,7 +1212,7 @@ namespace BgLuck
 				var existing = _game.PlacementObservations.FirstOrDefault(x => x.PlayerKey == playerKey);
 				if(existing != null)
 				{
-					if(finalCapture && isLocalPlayer)
+					if(finalCapture)
 					{
 						existing.Place = place;
 						existing.IsElimination = isElimination;
@@ -1380,6 +1409,8 @@ namespace BgLuck
 			if(endingMmr.HasValue && _completedStartingMmr.HasValue && _completedPlacement.HasValue)
 			{
 				var gain = (int?)(endingMmr.Value - _completedStartingMmr.Value);
+				_completedMmrChange = gain;
+
 				_completedAverageOpponentMmr = EstimateAverageOpponentMmr(
 					_completedStartingMmr, gain, _completedPlacement);
 				_completedAverageOpponentMmrResolved = true;
@@ -1392,8 +1423,73 @@ namespace BgLuck
 				return;
 
 			_overlay?.UpdateAverageOpponentMmr(_completedAverageOpponentMmr, false);
+			_overlay?.UpdateMmrChange(_completedMmrChange);
 		}
+		private void RecheckCompletedPlacement(
+			Hearthstone_Deck_Tracker.Hearthstone.GameV2 game)
+		{
+			if(_completedGameLog == null
+				|| DateTime.Now > _completedPlacementRecheckUntil)
+				return;
 
+			// Temporarily restore the completed game log.
+			var previousGame = _game;
+
+			try
+			{
+				_game = _completedGameLog;
+
+				CapturePlayerPlacements(
+					game,
+					game.GetTurnNumber(),
+					true);
+			}
+			catch(Exception e)
+			{
+				_debug.Add("Placement recheck: "
+					+ e.GetType().Name + ": " + e.Message);
+			}
+			finally
+			{
+				_game = previousGame;
+			}
+
+			var observedPlacement = GetFinalPlacement(
+				_completedGameLog,
+				LocalPlacementPlayerKey);
+
+			var isShared = HasSharedEliminationPlacement(
+				_completedGameLog,
+				LocalPlacementPlayerKey);
+
+			var reportedPlacement = GetHdtReportedPlacement(game);
+
+			var finalPlacement = _completedIsSpectator
+				? (double?)null
+				: isShared
+					? observedPlacement ?? reportedPlacement
+					: reportedPlacement ?? observedPlacement;
+
+			var simultaneousCount = GetSimultaneousEliminationCount(
+				_completedGameLog,
+				LocalPlacementPlayerKey);
+
+			if(finalPlacement == _completedPlacement
+				&& isShared == _completedPlacementIsShared
+				&& simultaneousCount == _completedSimultaneousEliminationCount)
+				return;
+
+			_completedPlacement = finalPlacement;
+			_completedPlacementIsShared = isShared;
+			_completedSimultaneousEliminationCount = simultaneousCount;
+
+			_overlay?.UpdateFinalPlacement(
+				_completedPlacement,
+				_completedSimultaneousEliminationCount);
+
+			if(!_completedIsSpectator && _completedStartingMmr.HasValue)
+				_completedAverageOpponentMmrResolved = false;
+		}
 		private void RefreshCompletedPlacement(
 			Hearthstone_Deck_Tracker.Hearthstone.GameV2 game)
 		{

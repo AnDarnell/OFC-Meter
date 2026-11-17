@@ -10,6 +10,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using System.Windows.Media.Imaging;
 
 namespace BgLuck
 {
@@ -52,7 +53,11 @@ namespace BgLuck
 		}
 		private int? _playerMmr;
 		public void SetPlayerMmr(int? playerMmr) => _playerMmr = playerMmr;
+		private int? _mmrChange;
+		private double? _lastFinalPlacement;
+		private int? _lastSimultaneousEliminationCount;
 		private readonly TextBlock _averageOpponentMmrLine;
+		private readonly TextBlock _mmrChangeLine;
 		private readonly StackPanel _header;
 		private readonly StackPanel _content;
 		private readonly StackPanel _damageLine;
@@ -94,8 +99,8 @@ namespace BgLuck
 
 		public LuckOverlayControl()
 		{
-			Width = 190;
-			Height = 70;
+			Width = 210;
+			Height = 90;
 			HorizontalAlignment = HorizontalAlignment.Left;
 			VerticalAlignment = VerticalAlignment.Top;
 
@@ -205,6 +210,12 @@ namespace BgLuck
 				FontSize = 12,
 				ToolTip = "Estimated average opponent MMR based on your rating, rating change, and final placement."
 			};
+			_mmrChangeLine = new TextBlock
+			{
+				Foreground = _neutral,
+				FontSize = 12,
+				ToolTip = "Your Battlegrounds MMR change for this game."
+			};
 			_content = new StackPanel
 			{
 				Margin = new Thickness(10, 4, 10, 4),
@@ -224,7 +235,7 @@ namespace BgLuck
 				Focusable = false,
 				Cursor = Cursors.Hand,
 				HorizontalAlignment = HorizontalAlignment.Center,
-				Margin = new Thickness(0, 1, 0, 1),
+				Margin = new Thickness(0, 4, 0, 2),
 				Visibility = Visibility.Collapsed
 			};
 			_icon = new Image
@@ -431,7 +442,7 @@ namespace BgLuck
 			_oddPlayerStatus.Inlines.Clear();
 			if(showLobbyLeaderGhostMarkers && oddPlayerId.HasValue)
 			{
-				_oddPlayerStatus.Inlines.Add(new Run("Odd player: ") { Foreground = _labelBlue });
+				_oddPlayerStatus.Inlines.Add(new Run("Currently has ghost: ") { Foreground = _labelBlue });
 				_oddPlayerStatus.Inlines.Add(new Run(string.IsNullOrEmpty(oddPlayerHeroName)
 					? "#" + oddPlayerId.Value
 					: oddPlayerHeroName)
@@ -491,6 +502,9 @@ namespace BgLuck
 
 		public void ResetForNewGame()
 		{
+			_mmrChange = null;
+			_lastFinalPlacement = null;
+			_lastSimultaneousEliminationCount = null;
 			_dismissed = false;
 			_liveMode = false;
 			_finalSummaryMode = false;
@@ -562,6 +576,7 @@ namespace BgLuck
 				_turnDetails.Children.Add(CreateTurnSummary(turn.Item1, turn.Item2, turn.Item3, turn.Item4));
 			_turnDetails.Visibility = Visibility.Collapsed;
 			SetTurnsExpanded(false);
+
 			BuildReview(
 				tierSeries, boardStats, finalComposition, finalPlacement, simultaneousEliminationCount,
 				averageOpponentMmr, averageOpponentMmrPending);
@@ -628,7 +643,7 @@ namespace BgLuck
 		{
 			var actualColor = GetTurnDamageColor(actualDamage, expectedDamage);
 			var summary = new TextBlock { FontSize = 12 };
-			summary.Inlines.Add(new Run("T" + turn + ": ") { Foreground = _neutral });
+			summary.Inlines.Add(new Run("Turn" + turn + ": ") { Foreground = _neutral });
 			summary.Inlines.Add(new Run(FormatDamageTaken(actualDamage)) { Foreground = actualColor });
 			summary.Inlines.Add(new Run(" (exp ") { Foreground = _neutral });
 			summary.Inlines.Add(new Run(expectedDamage.HasValue
@@ -866,7 +881,23 @@ namespace BgLuck
 				return _mediumRed;
 			return _gold;
 		}
-
+		private static string GetTribeIconFileName(string tribe)
+		{
+			switch(tribe)
+			{
+				case "Beasts": return "pet";
+				case "Demons": return "demon";
+				case "Dragons": return "dragon";
+				case "Elementals": return "elemental";
+				case "Mechs": return "mech";
+				case "Murlocs": return "murloc";
+				case "Naga": return "naga";
+				case "Pirates": return "pirate";
+				case "Quilboar": return "quilboar";
+				case "Undead": return "undead";
+				default: return null;
+			}
+		}
 		private void BuildReview(
 			IList<TierChartSeries> tierSeries,
 			IList<BoardStatsTurn> boardStats,
@@ -880,6 +911,33 @@ namespace BgLuck
 			_reviewContent.Children.Add(CreateDivider());
 			_reviewContent.Children.Add(CreateSectionHeader("Final comp"));
 			_finalComposition = finalComposition;
+			var testRow = new StackPanel
+			{
+				Orientation = Orientation.Horizontal
+			};
+
+			var tribes = (_finalComposition ?? string.Empty).Split('/');
+
+			foreach(var tribe in tribes)
+			{
+				var imageName = GetTribeIconFileName(tribe);
+
+				if(string.IsNullOrEmpty(imageName))
+					continue;
+
+				var tribeIcon = new Image
+				{
+					Width = 24,
+					Height = 24,
+					Margin = new Thickness(0, 0, 6, 0),
+					Source = new BitmapImage(new Uri(
+						"pack://application:,,,/HearthstoneDeckTracker;component/Resources/TribeIcons/" + imageName + ".jpg",
+						UriKind.Absolute))
+				};
+
+				testRow.Children.Add(tribeIcon);
+			}
+
 			_finalCompositionLine = new TextBlock
 			{
 				Foreground = Brushes.White,
@@ -888,10 +946,15 @@ namespace BgLuck
 				TextWrapping = TextWrapping.Wrap,
 				MaxWidth = 320
 			};
+
 			UpdateFinalPlacement(finalPlacement, simultaneousEliminationCount);
-			_reviewContent.Children.Add(_finalCompositionLine);
+			testRow.Children.Add(_finalCompositionLine);
+			_reviewContent.Children.Add(testRow);
 			_reviewContent.Children.Add(_averageOpponentMmrLine);
 			UpdateAverageOpponentMmr(averageOpponentMmr, averageOpponentMmrPending);
+
+			_reviewContent.Children.Add(_mmrChangeLine);
+			UpdateMmrChange(null);
 			_reviewContent.Children.Add(CreateDivider());
 			_reviewContent.Children.Add(CreateSectionHeader("Tier progression"));
 			if(tierSeries != null && tierSeries.Count > 0)
@@ -980,6 +1043,38 @@ namespace BgLuck
 				});
 			}
 		}
+		public void UpdateMmrChange(int? mmrChange)
+		{
+			_mmrChange = mmrChange;
+			_mmrChangeLine.Inlines.Clear();
+
+			_mmrChangeLine.Inlines.Add(new Run("MMR change: ")
+			{
+				Foreground = _labelBlue
+			});
+
+			if(!mmrChange.HasValue)
+			{
+				_mmrChangeLine.Inlines.Add(new Run("N/A")
+				{
+					Foreground = _neutral
+				});
+				return;
+			}
+
+			var value = mmrChange.Value;
+			var formattedValue = (value > 0 ? "+" : "")
+				+ value.ToString("N0", CultureInfo.CurrentCulture);
+
+			_mmrChangeLine.Inlines.Add(new Run(formattedValue)
+			{
+				Foreground = value > 0
+					? _strongGreen
+					: value < 0
+						? _strongRed
+						: _neutral
+			});
+		}
 		private Brush GetAverageOpponentMmrColor(double averageOpponentMmr)
 		{
 			if(!_playerMmr.HasValue)
@@ -994,26 +1089,30 @@ namespace BgLuck
 			return _avgOppOrange;
 		}
 
+		
 		public void UpdateFinalPlacement(double? finalPlacement, int? simultaneousEliminationCount)
 		{
 			if(_finalCompositionLine == null)
 				return;
 
+			_lastFinalPlacement = finalPlacement;
+			_lastSimultaneousEliminationCount = simultaneousEliminationCount;
+
+			var details = new List<string>();
+
+			if(finalPlacement.HasValue)
+				details.Add(FormatPlacement(finalPlacement.Value));
+
+			if(_mmrChange.HasValue)
+				details.Add(_mmrChange.Value.ToString("+0;-0;0", CultureInfo.InvariantCulture) + " MMR");
+
 			_finalCompositionLine.Text = (string.IsNullOrEmpty(_finalComposition) ? "Unavailable" : _finalComposition)
-				+ (finalPlacement.HasValue ? " (" + FormatPlacement(finalPlacement.Value) + ")" : "");
-			if(simultaneousEliminationCount.HasValue)
-			{
-				var count = simultaneousEliminationCount.Value;
-				_finalCompositionLine.Text += count > 1
-					? " - " + count + " eliminated together (you + " + (count - 1) + ")"
-					: " - eliminated solo";
-				_finalCompositionLine.ToolTip =
-					"Based on player elimination states recorded during the same combat. The total includes you.";
-			}
-			else
-				_finalCompositionLine.ToolTip =
-					"Simultaneous eliminations are inferred from player states and may be unavailable if the game data does not expose them.";
+				+ (details.Count > 0 ? " (" + string.Join(", ", details) + ")" : "");
+
+			_finalCompositionLine.ToolTip =
+				"Final placement, including shared placements when detected.";
 		}
+
 
 		private TextBlock CreateSectionHeader(string text) => new TextBlock
 		{
@@ -1071,7 +1170,7 @@ private StackPanel CreateTierOutlierSummary(IList<BoardStatsTurn> boardStats)
 					line.Inlines.Add(new Run(", ") { Foreground = _neutral });
 				var turn = turns[i];
 				line.Inlines.Add(new Run(
-					"T" + turn.Turn + " (T" + turn.PlayerTier + " vs T" + turn.OpponentTier.Value + ")")
+					"Turn" + turn.Turn + " (T" + turn.PlayerTier + " vs T" + turn.OpponentTier.Value + ")")
 				{
 					Foreground = color
 				});
@@ -1082,13 +1181,13 @@ private StackPanel CreateTierOutlierSummary(IList<BoardStatsTurn> boardStats)
 		{
 			var opponentTier = turn.OpponentTier.HasValue
 				? "T" + turn.OpponentTier.Value
-				: "T?";
+				: "Turn?";
 			var line = new TextBlock
 			{
 				FontSize = 11,
 				Margin = new Thickness(2, 1, 0, 1)
 			};
-			line.Inlines.Add(new Run("T" + turn.Turn + "  ") { Foreground = _neutral });
+			line.Inlines.Add(new Run("Turn " + turn.Turn + "  ") { Foreground = _neutral });
 			line.Inlines.Add(new Run("You T" + turn.PlayerTier + ": "
 				+ turn.PlayerAttack + "/" + turn.PlayerHealth) { Foreground = _gold });
 			line.Inlines.Add(new Run("  |  Opp. " + opponentTier + ": "
