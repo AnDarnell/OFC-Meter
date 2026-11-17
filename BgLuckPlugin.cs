@@ -23,6 +23,8 @@ namespace BgLuck
 	/// 
 	public class BgLuckPlugin : IPlugin
 	{
+		private const int LocalPlacementPlayerKey = 0;
+
 		public string Name => "OFC-Meter";
 		public string Description => "Tracks Battlegrounds combat outcomes, matchups, and board stats.";
 		public string ButtonText => "Settings";
@@ -59,6 +61,7 @@ namespace BgLuck
 		private int _lastCombatPhaseTurn;
 		private bool _tierHistoryApiUnavailableLogged;
 		private bool _tierHistoryErrorLogged;
+		private readonly HashSet<int> _localHeroEntityIds = new HashSet<int>();
 		private int? _completedStartingMmr;
 		private double? _completedPlacement;
 		private bool _completedPlacementIsShared;
@@ -67,6 +70,9 @@ namespace BgLuck
 		private bool _completedAverageOpponentMmrResolved;
 		private bool _completedIsSpectator;
 		private DateTime _completedRatingCheckDeadline;
+		private int? _completedAliveAtCombatStart;
+		private DateTime _completedPlacementRecheckUntil = DateTime.MinValue;
+		private double? _lastLoggedTagPlace;
 		private readonly List<string> _debug = new List<string>();
 
 		public void OnLoad()
@@ -393,6 +399,7 @@ namespace BgLuck
 			_lastCombatPhaseTurn = 0;
 			_tierHistoryApiUnavailableLogged = false;
 			_tierHistoryErrorLogged = false;
+			_localHeroEntityIds.Clear();
 			_overlay?.ResetForNewGame();
 		}
 
@@ -433,9 +440,11 @@ namespace BgLuck
 				if(!_game.StartingBattlegroundsMmr.HasValue)
 					_game.StartingBattlegroundsMmr = GetStartingBattlegroundsMmr(Core.Game);
 				var localControllerId = Core.Game?.Player?.Id;
-				var observedPlacement = GetFinalPlacement(_game, localControllerId);
-				_completedPlacementIsShared = HasSharedEliminationPlacement(_game, localControllerId);
-				_completedSimultaneousEliminationCount = GetSimultaneousEliminationCount(_game, localControllerId);
+				var observedPlacement = GetFinalPlacement(_game, LocalPlacementPlayerKey);
+				_completedPlacementIsShared = HasSharedEliminationPlacement(_game, LocalPlacementPlayerKey);
+				_completedSimultaneousEliminationCount = GetSimultaneousEliminationCount(
+					
+					_game, LocalPlacementPlayerKey);
 				var finalPlacement = _game.IsSpectator
 					? (double?)null
 					: _completedPlacementIsShared
@@ -446,6 +455,7 @@ namespace BgLuck
 					? (int?)(endingMmr.Value - _game.StartingBattlegroundsMmr.Value)
 					: null;
 				_completedStartingMmr = _game.StartingBattlegroundsMmr;
+				_overlay?.SetPlayerMmr(_completedStartingMmr);
 				_completedPlacement = finalPlacement;
 				_completedAverageOpponentMmr = EstimateAverageOpponentMmr(
 					_completedStartingMmr, gain, _completedPlacement);
@@ -577,6 +587,7 @@ namespace BgLuck
 					_lastCombatPhaseTurn = 0;
 					_tierHistoryApiUnavailableLogged = false;
 					_tierHistoryErrorLogged = false;
+					_localHeroEntityIds.Clear();
 					_completedStartingMmr = null;
 					_completedPlacement = null;
 					_completedPlacementIsShared = false;
@@ -813,9 +824,7 @@ namespace BgLuck
 				.Select(group => new
 				{
 					PlayerId = group.Key,
-					Place = group.Min(entity => entity.GetTag(placeTag)),
-					ControllerId = group.Select(entity => entity.GetTag(HearthDb.Enums.GameTag.CONTROLLER))
-						.FirstOrDefault(controllerId => controllerId > 0)
+					Place = group.Min(entity => entity.GetTag(placeTag))
 				})
 				.ToList();
 			var localPlayerId = game.Player.Hero.GetTag(playerIdTag);
@@ -824,7 +833,7 @@ namespace BgLuck
 
 			var livingOpponents = players
 				.Where(player => player.PlayerId != localPlayerId
-					&& !IsPlayerEliminated(game, player.ControllerId))
+					&& !IsPlayerEliminated(game, player.PlayerId))
 				.ToList();
 			var previousOpponents = _game.Combats
 				.Where(combat => combat.OpponentPlayerId.HasValue)
@@ -847,7 +856,7 @@ namespace BgLuck
 					|| player.Place < 1 || player.Place > 8)
 					continue;
 
-				var isEliminated = IsPlayerEliminated(game, player.ControllerId);
+				var isEliminated = IsPlayerEliminated(game, player.PlayerId);
 				var unavailable = isEliminated
 					? recentOpponentIds.Contains(player.PlayerId)
 					: false;
@@ -881,16 +890,17 @@ namespace BgLuck
 
 		private static bool IsPlayerEliminated(
 			Hearthstone_Deck_Tracker.Hearthstone.GameV2 game,
-			int controllerId)
+			int playerId)
 		{
-			if(game?.Entities == null || controllerId <= 0)
+			if(game?.Entities == null || playerId <= 0)
 				return false;
 
+			// Only the local player has a player entity that matches PLAYER_ID (HDT's Entity.IsPlayer).
 			var state = game.Entities.Values
 				.Where(entity => entity != null && entity.IsPlayer
-					&& entity.GetTag(HearthDb.Enums.GameTag.CONTROLLER) == controllerId)
+					&& entity.GetTag(HearthDb.Enums.GameTag.PLAYER_ID) == playerId)
 				.Select(entity => entity.GetTag(HearthDb.Enums.GameTag.PLAYSTATE))
-				.FirstOrDefault();
+				.FirstOrDefault(playState => playState != 0);
 			if(state == (int)HearthDb.Enums.PlayState.LOST
 				|| state == (int)HearthDb.Enums.PlayState.TIED
 				|| state == (int)HearthDb.Enums.PlayState.CONCEDED
@@ -898,8 +908,9 @@ namespace BgLuck
 				|| state == (int)HearthDb.Enums.PlayState.DISCONNECTED)
 				return true;
 
+			// Opponents share one CONTROLLER, so they are told apart by PLAYER_ID.
 			return game.Entities.Values.Any(entity => entity != null && entity.IsHero
-				&& entity.GetTag(HearthDb.Enums.GameTag.CONTROLLER) == controllerId
+				&& entity.GetTag(HearthDb.Enums.GameTag.PLAYER_ID) == playerId
 				&& entity.Health + entity.GetTag(HearthDb.Enums.GameTag.ARMOR) <= 0);
 		}
 
@@ -992,6 +1003,9 @@ namespace BgLuck
 
 		private void CapturePlayerTierHistories(Hearthstone_Deck_Tracker.Hearthstone.GameV2 game)
 		{
+			var playerHeroId = game.Player?.Hero?.Id;
+			if(playerHeroId.HasValue)
+				_localHeroEntityIds.Add(playerHeroId.Value);
 			if(game.Entities == null)
 				return;
 			if(_getTavernUpTurns == null)
@@ -1004,7 +1018,6 @@ namespace BgLuck
 				return;
 			}
 
-			var playerHeroId = game.Player?.Hero?.Id;
 			var playerId = game.Player?.Id;
 			var battlegroundsPlayerId = game.Player?.Hero?.GetTag(HearthDb.Enums.GameTag.PLAYER_ID) ?? 0;
 			foreach(var hero in game.Entities.Values.Where(e => e != null && e.IsHero))
@@ -1022,6 +1035,8 @@ namespace BgLuck
 					|| battlegroundsPlayerId > 0 && history.PlayerId == battlegroundsPlayerId
 					|| battlegroundsPlayerId <= 0 && history.PlayerId <= 0
 						&& playerId.HasValue && hero.IsControlledBy(playerId.Value);
+				if(history.IsLocalPlayer)
+					_localHeroEntityIds.Add(hero.Id);
 				var currentTier = hero.GetTag(HearthDb.Enums.GameTag.PLAYER_TECH_LEVEL);
 				if(currentTier > 0)
 					history.CurrentTier = currentTier;
@@ -1066,6 +1081,10 @@ namespace BgLuck
 			if(_game == null || game.Entities == null)
 				return;
 
+			var currentLocalHeroId = game.Player?.Hero?.Id;
+			if(currentLocalHeroId.HasValue)
+				_localHeroEntityIds.Add(currentLocalHeroId.Value);
+
 			var playerStates = new Dictionary<int, int>();
 			foreach(var playerEntity in game.Entities.Values.Where(e => e != null && e.IsPlayer))
 			{
@@ -1086,75 +1105,85 @@ namespace BgLuck
 			{
 				lost, tied, conceded, quit, disconnected
 			};
-			var eliminatedControllers = new HashSet<int>(playerStates
-				.Where(x => eliminatedStates.Contains(x.Value))
-				.Select(x => x.Key));
-			foreach(var hero in game.Entities.Values.Where(e => e != null && e.IsHero))
-			{
-				var controllerId = hero.GetTag(HearthDb.Enums.GameTag.CONTROLLER);
-				if(controllerId > 0
-					&& hero.Health + hero.GetTag(HearthDb.Enums.GameTag.ARMOR) <= 0)
-					eliminatedControllers.Add(controllerId);
-			}
-
-			var aliveControllers = new HashSet<int>(playerStates.Keys
-				.Where(controllerId => !eliminatedControllers.Contains(controllerId)));
 			var localControllerId = game.Player?.Id;
+			var localPlayState = localControllerId.HasValue
+				&& playerStates.TryGetValue(localControllerId.Value, out var state)
+					? state
+					: 0;
+			var localPlayerEliminated = eliminatedStates.Contains(localPlayState);
+			var localHero = game.Player?.Hero;
+			if(localHero != null && localHero.Health + localHero.GetTag(HearthDb.Enums.GameTag.ARMOR) <= 0)
+				localPlayerEliminated = true;
+			if(finalCapture)
+			{
+				var finalCombat = _game.Combats.OrderByDescending(combat => combat.Turn).FirstOrDefault();
+				if(finalCombat != null && finalCombat.Result == "Loss"
+					&& finalCombat.RawDamageTaken > finalCombat.PlayerHealth + finalCombat.PlayerArmor)
+					localPlayerEliminated = true;
+			}
+			var alivePlayerKeys = GetAliveLobbyPlayerKeys(game);
+			if(localPlayerEliminated)
+				alivePlayerKeys.Remove(LocalPlacementPlayerKey);
+
 			if(game.IsBattlegroundsCombatPhase
 				&& (!_lastCombatPhase || turn != _lastCombatPhaseTurn))
 			{
 				_game.PlacementCombatStartTurn = turn;
-				_game.AlivePlayersAtCombatStart = aliveControllers;
-				_game.AlivePlayerCountsAtCombatStart[turn] = aliveControllers.Count;
+				_game.AlivePlayersAtCombatStart = alivePlayerKeys;
+				_game.AlivePlayerCountsAtCombatStart[turn] = alivePlayerKeys.Count;
 			}
 			if(_game.PlacementCombatStartTurn.HasValue
 				&& (_game.PlacementCombatStartTurn.Value == turn || finalCapture))
 			{
 				var eliminatedDuringCombat = _game.AlivePlayersAtCombatStart
-					.Where(controllerId => !aliveControllers.Contains(controllerId))
+					.Where(playerKey => !alivePlayerKeys.Contains(playerKey))
 					.ToList();
-				if(localControllerId.HasValue && eliminatedDuringCombat.Contains(localControllerId.Value))
+				if(eliminatedDuringCombat.Contains(LocalPlacementPlayerKey))
 					_game.SimultaneousEliminationCounts[_game.PlacementCombatStartTurn.Value] =
 						eliminatedDuringCombat.Count;
 				if(eliminatedDuringCombat.Count > 1)
 				{
 					var combatTurn = _game.PlacementCombatStartTurn.Value;
-					var aliveAfterCombat = _game.AlivePlayersAtCombatStart.Count - eliminatedDuringCombat.Count;
+					var aliveAfterCombat = alivePlayerKeys.Count;
 					_game.SimultaneousEliminationTurns.Add(combatTurn);
 					_game.AlivePlayerCountsAfterCombat[combatTurn] = aliveAfterCombat;
 				}
 			}
 
-			var localHeroId = game.Player?.Hero?.Id;
+			var playerIdTag = HearthDb.Enums.GameTag.PLAYER_ID;
 			var observations = new List<PlayerPlacementLog>();
 			var observationTurn = finalCapture && _game.PlacementCombatStartTurn.HasValue
 				? _game.PlacementCombatStartTurn.Value
 				: turn;
 			foreach(var placementEntity in game.Entities.Values
-				.Where(e => e != null && e.HasTag(placeTag)))
+				.Where(e => e != null && e.HasTag(placeTag))
+				.OrderByDescending(e => e.Id))
 			{
-				var controllerId = placementEntity.GetTag(HearthDb.Enums.GameTag.CONTROLLER);
+				var isLocalPlayer = placementEntity.IsHero
+					&& _localHeroEntityIds.Contains(placementEntity.Id);
+				var playerKey = isLocalPlayer
+					? LocalPlacementPlayerKey
+					: placementEntity.GetTag(playerIdTag);
 				var place = placementEntity.GetTag(placeTag);
-				if(controllerId <= 0 || place < 1 || place > 8)
-					continue;
-				if(localControllerId == controllerId && localHeroId.HasValue && placementEntity.IsHero
-					&& placementEntity.Id != localHeroId.Value)
+				if((!isLocalPlayer && playerKey <= 0) || place < 1 || place > 8)
 					continue;
 
-				var playState = playerStates.TryGetValue(controllerId, out var state)
-					? state
+				var playState = isLocalPlayer && localControllerId.HasValue
+					&& playerStates.TryGetValue(localControllerId.Value, out var playerState)
+						? playerState
 					: placementEntity.GetTag(playStateTag);
-				var isElimination = playState == lost || playState == tied
+				var isElimination = isLocalPlayer && localPlayerEliminated
+					|| playState == lost || playState == tied
 					|| playState == conceded || playState == quit || playState == disconnected
 					|| placementEntity.IsHero
 						&& placementEntity.Health + placementEntity.GetTag(HearthDb.Enums.GameTag.ARMOR) <= 0;
 				var isTerminal = isElimination || playState == won;
-				if(!isTerminal && (!finalCapture || game.Player == null || controllerId != game.Player.Id))
+				if(!isTerminal && (!finalCapture || !isLocalPlayer))
 					continue;
-				var existing = _game.PlacementObservations.FirstOrDefault(x => x.ControllerId == controllerId);
+				var existing = _game.PlacementObservations.FirstOrDefault(x => x.PlayerKey == playerKey);
 				if(existing != null)
 				{
-					if(finalCapture && localControllerId == controllerId)
+					if(finalCapture && isLocalPlayer)
 					{
 						existing.Place = place;
 						existing.IsElimination = isElimination;
@@ -1164,12 +1193,12 @@ namespace BgLuck
 					}
 					continue;
 				}
-				if(observations.Any(x => x.ControllerId == controllerId))
+				if(observations.Any(x => x.PlayerKey == playerKey))
 					continue;
 
 				observations.Add(new PlayerPlacementLog
 				{
-					ControllerId = controllerId,
+					PlayerKey = playerKey,
 					HeroEntityId = placementEntity.Id,
 					PlayState = playState,
 					Place = place,
@@ -1189,12 +1218,47 @@ namespace BgLuck
 			}
 		}
 
-		private static double? GetFinalPlacement(GameLog game, int? localControllerId)
+		private HashSet<int> GetAliveLobbyPlayerKeys(
+			Hearthstone_Deck_Tracker.Hearthstone.GameV2 game)
 		{
-			if(!localControllerId.HasValue)
+			var playerIdTag = HearthDb.Enums.GameTag.PLAYER_ID;
+			var placeTag = HearthDb.Enums.GameTag.PLAYER_LEADERBOARD_PLACE;
+			var playerKeys = new HashSet<int>();
+			var localHero = game.Player?.Hero;
+			if(_localHeroEntityIds.Count > 0 && (localHero == null
+				|| localHero.Health + localHero.GetTag(HearthDb.Enums.GameTag.ARMOR) > 0))
+				playerKeys.Add(LocalPlacementPlayerKey);
+
+			if(game.Entities == null)
+				return playerKeys;
+
+			var lobbyHeroes = game.Entities.Values
+				.Where(hero => hero != null && hero.IsHero
+					&& !_localHeroEntityIds.Contains(hero.Id)
+					&& hero.HasTag(placeTag)
+					&& hero.GetTag(HearthDb.Enums.GameTag.BACON_DUMMY_PLAYER) != 1)
+				.Select(hero => new
+				{
+					Hero = hero,
+					PlayerId = hero.GetTag(playerIdTag)
+				})
+				.Where(x => x.PlayerId > 0)
+				.GroupBy(x => x.PlayerId)
+				.Select(group => group.OrderByDescending(x => x.Hero.Id).First());
+			foreach(var lobbyHero in lobbyHeroes)
+			{
+				if(lobbyHero.Hero.Health + lobbyHero.Hero.GetTag(HearthDb.Enums.GameTag.ARMOR) > 0)
+					playerKeys.Add(lobbyHero.PlayerId);
+			}
+			return playerKeys;
+		}
+
+		private static double? GetFinalPlacement(GameLog game, int? localPlayerKey)
+		{
+			if(!localPlayerKey.HasValue)
 				return null;
 			var local = game.PlacementObservations
-				.FirstOrDefault(x => x.ControllerId == localControllerId.Value);
+				.FirstOrDefault(x => x.PlayerKey == localPlayerKey.Value);
 			if(local == null)
 				return null;
 			if(!local.IsElimination)
@@ -1232,25 +1296,25 @@ namespace BgLuck
 				: (rankedSlots[middle - 1] + rankedSlots[middle]) / 2.0;
 		}
 
-		private static bool HasSharedEliminationPlacement(GameLog game, int? localControllerId)
+		private static bool HasSharedEliminationPlacement(GameLog game, int? localPlayerKey)
 		{
-			if(!localControllerId.HasValue)
+			if(!localPlayerKey.HasValue)
 				return false;
 
 			var local = game.PlacementObservations
-				.FirstOrDefault(x => x.ControllerId == localControllerId.Value);
+				.FirstOrDefault(x => x.PlayerKey == localPlayerKey.Value);
 			return local != null
 				&& local.IsElimination
 				&& game.SimultaneousEliminationTurns.Contains(local.Turn);
 		}
 
-		private static int? GetSimultaneousEliminationCount(GameLog game, int? localControllerId)
+		private static int? GetSimultaneousEliminationCount(GameLog game, int? localPlayerKey)
 		{
-			if(!localControllerId.HasValue)
+			if(!localPlayerKey.HasValue)
 				return null;
 
 			var local = game.PlacementObservations
-				.FirstOrDefault(x => x.ControllerId == localControllerId.Value);
+				.FirstOrDefault(x => x.PlayerKey == localPlayerKey.Value);
 			return local != null
 				&& local.IsElimination
 				&& game.SimultaneousEliminationCounts.TryGetValue(local.Turn, out var count)
@@ -1559,12 +1623,16 @@ namespace BgLuck
 					// ASSUMPTION (verify against your first logged game): one int per simulation,
 					// positive = I deal damage, negative = I take damage, 0 = tie.
 					var results = new List<int>();
+					var uncappedResults = new List<int>();
 					foreach(var o in (IEnumerable)raw)
 					{
 						var damage = Convert.ToInt32(o);
 						results.Add(damage < 0 ? CapDamageTaken(-damage, c) : 0);
+						uncappedResults.Add(damage < 0 ? -damage : 0);
 					}
 					ApplyDistribution(c, results);
+					if(uncappedResults.Count > 0)
+						c.UncappedExpectedDamageTaken = Math.Round(uncappedResults.Average(), 2);
 				}
 				catch(Exception e)
 				{
@@ -1626,8 +1694,12 @@ namespace BgLuck
 			game.TotalActualDamageTaken = game.Combats.Sum(x => x.ActualDamageTaken);
 			game.ScoredActualDamageTaken = scoredCombats.Sum(x => x.ActualDamageTaken);
 			game.TotalExpectedDamageTaken = Math.Round(scoredCombats.Sum(x => x.ExpectedDamageTaken.Value), 2);
+			game.ScoredUncappedActualDamageTaken = scoredCombats
+				.Sum(x => Math.Max(x.RawDamageTaken, x.ActualDamageTaken));
+			game.TotalUncappedExpectedDamageTaken = Math.Round(
+				scoredCombats.Sum(x => x.UncappedExpectedDamageTaken ?? x.ExpectedDamageTaken.Value), 2);
 			game.DamageTakenRatio = Math.Round(
-				(game.ScoredActualDamageTaken + 1.0) / (game.TotalExpectedDamageTaken + 1.0), 4);
+				(game.ScoredUncappedActualDamageTaken + 1.0) / (game.TotalUncappedExpectedDamageTaken + 1.0), 4);
 			if(currentEffectiveHealth.HasValue)
 				game.ExpectedHealthAtEnd = Math.Round(
 					currentEffectiveHealth.Value + game.TotalActualDamageTaken - game.TotalExpectedDamageTaken, 2);
@@ -1779,6 +1851,8 @@ namespace BgLuck
 			public int ScoredCombats;
 			public int TotalActualDamageTaken;
 			public int ScoredActualDamageTaken;
+			public int ScoredUncappedActualDamageTaken;
+			public double TotalUncappedExpectedDamageTaken;
 			public double TotalExpectedDamageTaken;
 			public double? DamageTakenRatio;
 			public double? ExpectedHealthAtEnd;
@@ -1822,7 +1896,7 @@ namespace BgLuck
 
 		private class PlayerPlacementLog
 		{
-			public int ControllerId;
+			public int PlayerKey;
 			public int HeroEntityId;
 			public int PlayState;
 			public int Place;
@@ -1879,6 +1953,7 @@ namespace BgLuck
 			public string Result;
 			public int ActualDamageTaken;
 			public int RawDamageTaken;
+			public double? UncappedExpectedDamageTaken;
 			public double WinRate, TieRate, LossRate, TheirDeathRate, MyDeathRate;
 			public int Simulations;
 			public double? ExpectedDamageTaken;
