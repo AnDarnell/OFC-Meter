@@ -70,6 +70,9 @@ namespace BgLuck
 		private bool _completedAverageOpponentMmrResolved;
 		private bool _completedIsSpectator;
 		private DateTime _completedRatingCheckDeadline;
+		private int? _completedAliveAtCombatStart;
+		private DateTime _completedPlacementRecheckUntil = DateTime.MinValue;
+		private double? _lastLoggedTagPlace;
 		private readonly List<string> _debug = new List<string>();
 
 		public void OnLoad()
@@ -440,6 +443,7 @@ namespace BgLuck
 				var observedPlacement = GetFinalPlacement(_game, LocalPlacementPlayerKey);
 				_completedPlacementIsShared = HasSharedEliminationPlacement(_game, LocalPlacementPlayerKey);
 				_completedSimultaneousEliminationCount = GetSimultaneousEliminationCount(
+					
 					_game, LocalPlacementPlayerKey);
 				var finalPlacement = _game.IsSpectator
 					? (double?)null
@@ -451,6 +455,7 @@ namespace BgLuck
 					? (int?)(endingMmr.Value - _game.StartingBattlegroundsMmr.Value)
 					: null;
 				_completedStartingMmr = _game.StartingBattlegroundsMmr;
+				_overlay?.SetPlayerMmr(_completedStartingMmr);
 				_completedPlacement = finalPlacement;
 				_completedAverageOpponentMmr = EstimateAverageOpponentMmr(
 					_completedStartingMmr, gain, _completedPlacement);
@@ -1618,12 +1623,16 @@ namespace BgLuck
 					// ASSUMPTION (verify against your first logged game): one int per simulation,
 					// positive = I deal damage, negative = I take damage, 0 = tie.
 					var results = new List<int>();
+					var uncappedResults = new List<int>();
 					foreach(var o in (IEnumerable)raw)
 					{
 						var damage = Convert.ToInt32(o);
 						results.Add(damage < 0 ? CapDamageTaken(-damage, c) : 0);
+						uncappedResults.Add(damage < 0 ? -damage : 0);
 					}
 					ApplyDistribution(c, results);
+					if(uncappedResults.Count > 0)
+						c.UncappedExpectedDamageTaken = Math.Round(uncappedResults.Average(), 2);
 				}
 				catch(Exception e)
 				{
@@ -1685,8 +1694,12 @@ namespace BgLuck
 			game.TotalActualDamageTaken = game.Combats.Sum(x => x.ActualDamageTaken);
 			game.ScoredActualDamageTaken = scoredCombats.Sum(x => x.ActualDamageTaken);
 			game.TotalExpectedDamageTaken = Math.Round(scoredCombats.Sum(x => x.ExpectedDamageTaken.Value), 2);
+			game.ScoredUncappedActualDamageTaken = scoredCombats
+				.Sum(x => Math.Max(x.RawDamageTaken, x.ActualDamageTaken));
+			game.TotalUncappedExpectedDamageTaken = Math.Round(
+				scoredCombats.Sum(x => x.UncappedExpectedDamageTaken ?? x.ExpectedDamageTaken.Value), 2);
 			game.DamageTakenRatio = Math.Round(
-				(game.ScoredActualDamageTaken + 1.0) / (game.TotalExpectedDamageTaken + 1.0), 4);
+				(game.ScoredUncappedActualDamageTaken + 1.0) / (game.TotalUncappedExpectedDamageTaken + 1.0), 4);
 			if(currentEffectiveHealth.HasValue)
 				game.ExpectedHealthAtEnd = Math.Round(
 					currentEffectiveHealth.Value + game.TotalActualDamageTaken - game.TotalExpectedDamageTaken, 2);
@@ -1838,6 +1851,8 @@ namespace BgLuck
 			public int ScoredCombats;
 			public int TotalActualDamageTaken;
 			public int ScoredActualDamageTaken;
+			public int ScoredUncappedActualDamageTaken;
+			public double TotalUncappedExpectedDamageTaken;
 			public double TotalExpectedDamageTaken;
 			public double? DamageTakenRatio;
 			public double? ExpectedHealthAtEnd;
@@ -1938,6 +1953,7 @@ namespace BgLuck
 			public string Result;
 			public int ActualDamageTaken;
 			public int RawDamageTaken;
+			public double? UncappedExpectedDamageTaken;
 			public double WinRate, TieRate, LossRate, TheirDeathRate, MyDeathRate;
 			public int Simulations;
 			public double? ExpectedDamageTaken;

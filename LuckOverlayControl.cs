@@ -39,6 +39,19 @@ namespace BgLuck
 		private TextBlock _finalCompositionLine;
 		private string _finalComposition;
 		private readonly TextBlock _lobbyMessage;
+
+		private const double AvgOppMmrCap = 11000;
+		private const double AvgOppMmrBand = 2000;
+		private static readonly Brush _avgOppOrange = CreateFrozenBrush(Color.FromRgb(255, 152, 0));
+
+		private static Brush CreateFrozenBrush(Color color)
+		{
+			var brush = new SolidColorBrush(color);
+			brush.Freeze();
+			return brush;
+		}
+		private int? _playerMmr;
+		public void SetPlayerMmr(int? playerMmr) => _playerMmr = playerMmr;
 		private readonly TextBlock _averageOpponentMmrLine;
 		private readonly StackPanel _header;
 		private readonly StackPanel _content;
@@ -88,7 +101,7 @@ namespace BgLuck
 
 			_status = new TextBlock
 			{
-				Text = "OFC-Meter",
+				Text = "OFC Meter:",
 				Foreground = Brushes.White,
 				FontSize = 16,
 				FontWeight = FontWeights.SemiBold,
@@ -126,7 +139,7 @@ namespace BgLuck
 				ToolTip = "Hero associated with Battlegrounds player ID 1."
 			};
 			_actualValue = new TextBlock { Foreground = _neutral, FontSize = 12, ToolTip = "Damage taken" };
-			_expectedValue = new TextBlock { Foreground = _neutral, FontSize = 12, ToolTip = "Expected damage taken" };
+			_expectedValue = new TextBlock { Foreground = _neutral, FontSize = 12, ToolTip = "Expected" };
 			_score = new TextBlock { Foreground = _neutral, FontSize = 13, Visibility = Visibility.Collapsed };
 			_worstCombatLine = new TextBlock { Foreground = _neutral, FontSize = 12, Visibility = Visibility.Collapsed };
 			_bestCombatLine = new TextBlock { Foreground = _neutral, FontSize = 12, Visibility = Visibility.Collapsed };
@@ -223,7 +236,7 @@ namespace BgLuck
 				Stretch = Stretch.Uniform,
 				VerticalAlignment = VerticalAlignment.Center,
 				Margin = new Thickness(0, 0, 6, 0),
-				ToolTip = "OFC-Meter"
+				ToolTip = "OFC Meter:"
 			};
 			var luckLine = new StackPanel
 			{
@@ -408,7 +421,7 @@ namespace BgLuck
 			_finalSummaryMode = false;
 			SetContentVerticalAlignment(true);
 			_openRecapButton.Visibility = Visibility.Collapsed;
-			_status.Text = "OFC-Meter";
+			_status.Text = "OFC Meter:";
 			SetLiveScoreLabel(ratio);
 			_liveScore.ToolTip = BuildLiveScoreTooltip(
 				actualDamageTaken, scoredActualDamageTaken, expectedDamageTaken,
@@ -444,10 +457,10 @@ namespace BgLuck
 				: Visibility.Collapsed;
 			SetDamageValue(
 				_actualValue,
-				"DT: ",
+				"Damage Taken: ",
 				FormatDamageTaken(actualDamageTaken),
 				GetDamageComparisonColor(actualDamageTaken, expectedDamageTaken));
-			SetDamageValue(_expectedValue, "Exp. DT: ", FormatDamageTaken(expectedDamageTaken), _gold);
+			SetDamageValue(_expectedValue, "Expected: ", FormatDamageTaken(expectedDamageTaken), _gold);
 			_damageLine.Visibility = Visibility.Visible;
 			SetHealthLine(currentHealth, expectedHealth ?? (double?)currentHealth);
 			_healthLine.Visibility = Visibility.Visible;
@@ -519,7 +532,7 @@ namespace BgLuck
 			SetContentVerticalAlignment(true);
 			_detailsCloseTimer.Stop();
 			SetTurnsExpanded(false);
-			_status.Text = "OFC-Meter";
+			_status.Text = "OFC Meter:";
 			SetLiveScoreLabel(ratio);
 			_liveScore.Foreground = GetScoreColor(ratio);
 			SetCompactExpectedHealth(
@@ -555,10 +568,8 @@ namespace BgLuck
 			_score.Text = isSpectator
 				? "Spectator game - not ranked"
 				: ratio.HasValue
-				? "Damage taken ratio: " + ratio.Value.ToString("0.00")
-				: actualDamageTaken == 0 && expectedDamageTaken == 0
-					? "Damage taken ratio: N/A"
-					: "Damage taken ratio: N/A";
+					? FormatDamageVsExpected(ratio.Value)
+					: "Damage taken vs expected: N/A";
 			SetCombatOutcomeLine(_worstCombatLine, "Worst combat", worstCombat);
 			SetCombatOutcomeLine(_bestCombatLine, "Best combat", bestCombat);
 			_worstCombatLine.Visibility = Visibility.Visible;
@@ -584,7 +595,7 @@ namespace BgLuck
 			_detailsCloseTimer.Stop();
 			SetTurnsExpanded(false);
 			SetDetailsExpanded(false);
-			_status.Text = "OFC-Meter";
+			_status.Text = "OFC Meter:";
 			_compactExpectedHealth.Visibility = Visibility.Collapsed;
 			_oddPlayerStatus.Visibility = Visibility.Collapsed;
 			_ghostPriorityStatus.Visibility = Visibility.Collapsed;
@@ -689,8 +700,8 @@ namespace BgLuck
 			double? healthPercentile)
 		{
 			var ratioExplanation = ratio.HasValue
-				? "Damage taken ratio = (scored actual damage + 1) / (expected damage + 1), calculated once from match totals. Below 1.00 means less damage than expected."
-				: "Damage taken ratio is unavailable.";
+				? "Luck score = (expected damage + 1) / (scored actual damage + 1), calculated from match totals with overkill damage (beyond your remaining health) included. Above 1.00 means less damage than expected (lucky)."
+				: "Luck score is unavailable.";
 			var text = new TextBlock
 			{
 				Text = "Actual DT (all fights): " + FormatDamageTaken(actualDamageTaken)
@@ -723,8 +734,9 @@ namespace BgLuck
 			double? expectedHealth,
 			double? healthPercentile)
 		{
-			var ratioText = ratio.HasValue
-				? "\nDamage taken ratio ((scored actual + 1) / (expected + 1)): " + ratio.Value.ToString("0.00")
+			var luck = ToLuckScore(ratio);
+			var ratioText = luck.HasValue
+				? "\nLuck score ((expected + 1) / (scored actual + 1), overkill included): " + luck.Value.ToString("0.00")
 				: "";
 			var text = new TextBlock
 			{
@@ -803,7 +815,7 @@ namespace BgLuck
 		{
 			_compactExpectedHealth.Inlines.Clear();
 			_compactExpectedHealth.Visibility = Visibility.Visible;
-			_compactExpectedHealth.Inlines.Add(new Run("Exp. HP: ") { Foreground = _neutral });
+			_compactExpectedHealth.Inlines.Add(new Run("Expected HP: ") { Foreground = _neutral });
 			if(!expectedHealth.HasValue)
 			{
 				_compactExpectedHealth.Inlines.Add(new Run("N/A") { Foreground = _neutral });
@@ -903,6 +915,10 @@ namespace BgLuck
 				opponentResultLegend.Inlines.Add(new Run("Loss") { Foreground = _opponentLossRing });
 				if(boardStats != null && boardStats.Any(x => x.OpponentTier.HasValue))
 					_reviewContent.Children.Add(opponentResultLegend);
+
+				var outliers = CreateTierOutlierSummary(boardStats);
+				if(outliers != null)
+					_reviewContent.Children.Add(outliers);
 			}
 			else
 				_reviewContent.Children.Add(new TextBlock
@@ -945,10 +961,37 @@ namespace BgLuck
 
 		public void UpdateAverageOpponentMmr(double? averageOpponentMmr, bool pending)
 		{
-			_averageOpponentMmrLine.Text = averageOpponentMmr.HasValue
-				? "Avg opp: " + averageOpponentMmr.Value.ToString("N0", CultureInfo.CurrentCulture)
-				: pending ? "Avg opp: Calculating..." : "Avg opp: N/A";
-			_averageOpponentMmrLine.Foreground = averageOpponentMmr.HasValue ? _labelBlue : _neutral;
+			_averageOpponentMmrLine.Inlines.Clear();
+			if(averageOpponentMmr.HasValue)
+			{
+				_averageOpponentMmrLine.Inlines.Add(new Run("Avg opp: ") { Foreground = _labelBlue });
+				_averageOpponentMmrLine.Inlines.Add(new Run(
+					averageOpponentMmr.Value.ToString("N0", CultureInfo.CurrentCulture))
+				{
+					Foreground = GetAverageOpponentMmrColor(averageOpponentMmr.Value)
+				});
+			}
+			else
+			{
+				_averageOpponentMmrLine.Inlines.Add(new Run(
+					pending ? "Avg opp: Calculating..." : "Avg opp: N/A")
+				{
+					Foreground = _neutral
+				});
+			}
+		}
+		private Brush GetAverageOpponentMmrColor(double averageOpponentMmr)
+		{
+			if(!_playerMmr.HasValue)
+				return _labelBlue;
+			var diff = averageOpponentMmr - Math.Min(_playerMmr.Value, AvgOppMmrCap);
+			if(diff >= AvgOppMmrBand)
+				return _strongGreen;
+			if(diff >= 0)
+				return _lightGreen;
+			if(diff > -AvgOppMmrBand)
+				return _gold;
+			return _avgOppOrange;
 		}
 
 		public void UpdateFinalPlacement(double? finalPlacement, int? simultaneousEliminationCount)
@@ -963,7 +1006,7 @@ namespace BgLuck
 				var count = simultaneousEliminationCount.Value;
 				_finalCompositionLine.Text += count > 1
 					? " - " + count + " eliminated together (you + " + (count - 1) + ")"
-					: " - no other eliminations observed with you";
+					: " - eliminated solo";
 				_finalCompositionLine.ToolTip =
 					"Based on player elimination states recorded during the same combat. The total includes you.";
 			}
@@ -987,7 +1030,54 @@ namespace BgLuck
 			Background = _dividerBrush,
 			Margin = new Thickness(0, 3, 0, 3)
 		};
+		private const int TierOutlierMinGap = 1;
+private const int TierOutlierMaxTurn = 10;
 
+private StackPanel CreateTierOutlierSummary(IList<BoardStatsTurn> boardStats)
+{
+	if(boardStats == null)
+		return null;
+
+	var lostToHigher = boardStats
+		.Where(x => x.Turn <= TierOutlierMaxTurn
+			&& x.Result == "Loss" && x.OpponentTier.HasValue
+			&& x.OpponentTier.Value - x.PlayerTier >= TierOutlierMinGap)
+		.OrderBy(x => x.Turn)
+		.ToList();
+	var wonVsLower = boardStats
+		.Where(x => x.Turn <= TierOutlierMaxTurn
+			&& x.Result == "Win" && x.OpponentTier.HasValue
+			&& x.PlayerTier - x.OpponentTier.Value >= TierOutlierMinGap)
+		.OrderBy(x => x.Turn)
+		.ToList();
+	if(lostToHigher.Count == 0 && wonVsLower.Count == 0)
+		return null;
+
+	var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 5) };
+	if(lostToHigher.Count > 0)
+		panel.Children.Add(CreateTierOutlierLine("Lost to higher tier: ", lostToHigher, _opponentLossRing));
+	if(wonVsLower.Count > 0)
+		panel.Children.Add(CreateTierOutlierLine("Won vs lower tier: ", wonVsLower, _opponentWinRing));
+	return panel;
+}
+
+		private TextBlock CreateTierOutlierLine(string label, IList<BoardStatsTurn> turns, Brush color)
+		{
+			var line = new TextBlock { FontSize = 11, TextWrapping = TextWrapping.Wrap, MaxWidth = 320 };
+			line.Inlines.Add(new Run(label) { Foreground = _labelBlue });
+			for(var i = 0; i < turns.Count; i++)
+			{
+				if(i > 0)
+					line.Inlines.Add(new Run(", ") { Foreground = _neutral });
+				var turn = turns[i];
+				line.Inlines.Add(new Run(
+					"T" + turn.Turn + " (T" + turn.PlayerTier + " vs T" + turn.OpponentTier.Value + ")")
+				{
+					Foreground = color
+				});
+			}
+			return line;
+		}
 		private TextBlock CreateBoardStatsLine(BoardStatsTurn turn)
 		{
 			var opponentTier = turn.OpponentTier.HasValue
@@ -1009,6 +1099,13 @@ namespace BgLuck
 			return line;
 		}
 
+		private static string FormatDamageVsExpected(double ratio)
+		{
+			var percent = (int)Math.Round(Math.Abs(ratio - 1) * 100, MidpointRounding.AwayFromZero);
+			if(percent == 0)
+				return "You took as much damage as expected";
+			return "You took " + percent + "% " + (ratio > 1 ? "more" : "less") + " damage than expected";
+		}
 		private static string FormatPlacement(double placement)
 		{
 			var rounded = Math.Round(placement);
@@ -1323,11 +1420,13 @@ namespace BgLuck
 				Canvas.SetTop(this, Math.Max(0, Math.Min(Math.Max(0, canvas.ActualHeight - Height), top)));
 			}
 		}
-
+		private static double? ToLuckScore(double? ratio) =>
+			ratio.HasValue && ratio.Value > 0 ? 1.0 / ratio.Value : (double?)null;
 		private void SetLiveScoreLabel(double? ratio)
 		{
+			var luck = ToLuckScore(ratio);
 			_liveScore.Inlines.Clear();
-			_liveScore.Inlines.Add(new Run(ratio.HasValue ? ratio.Value.ToString("0.00") : "N/A"));
+			_liveScore.Inlines.Add(new Run(luck.HasValue ? luck.Value.ToString("0.00") : "N/A"));
 		}
 
 		private Brush GetPercentileColor(double? percentile)

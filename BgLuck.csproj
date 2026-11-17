@@ -6,7 +6,7 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>OFC-Meter</AssemblyName>
     <RootNamespace>BgLuck</RootNamespace>
-    <HdtDir Condition="'$(HdtDir)' == ''">C:\Users\Admin\AppData\Local\HearthstoneDeckTracker\app-1.59.7</HdtDir>
+    <HdtDir Condition="'$(HdtDir)' == ''">C:\Users\Admin\AppData\Local\HearthstoneDeckTracker\current</HdtDir>
   </PropertyGroup>
 
   <ItemGroup>
